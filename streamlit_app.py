@@ -435,7 +435,8 @@ with tabs[6]:
     # líquido = soma(POS) - soma(NEG)
     total_pos = sum([it["vlr"] for g in pco_groups for it in g["items"]], Decimal("0"))
     total_neg = sum([it["vlr"] for g in despesa_anular_groups for it in g["items"]], Decimal("0"))
-    vlr_liquido = (total_pos - total_neg)
+    total_outros = sum([it["vlr"] for it in outros_items], Decimal("0"))
+    vlr_liquido = (total_pos + total_outros - total_neg)
 
     # ---- Pagamentos
     pagamentos = []
@@ -463,7 +464,7 @@ with tabs[6]:
     st.write(f"Valor líquido (Dados Básicos): **{fmt_money(vlr_liquido)}**")
     st.write(f"Soma Pagamentos (dadosPgto): **{fmt_money(total_pgto)}**")
     st.write(f"Soma CentroCusto (relPco + relOutros - relDespesaAnular): **{fmt_money(total_cc)}**")
-
+    st.write(f"Total OutrosLanc: **{fmt_money(total_outros)}**")
     if vlr_liquido <= 0:
         st.error("⚠️ Valor líquido <= 0. Verifique os itens.")
     if total_pgto != vlr_liquido:
