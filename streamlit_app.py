@@ -150,8 +150,6 @@ def build_xml(payload: dict) -> bytes:
             add_text(it, "numSeqItem", item["numSeqItem"])
             add_text(it, "numEmpe", item["numEmpe"])
             add_text(it, "codSubItemEmpe", item["codSubItemEmpe"])
-            # Conforme XSD DH001: indrLiquidado (boolean) vem antes de vlr
-            add_text(it, "indrLiquidado", "true")
             add_text(it, "vlr", item["vlr"])
             add_text(it, "numClassA", item["numClassA"])
 
@@ -166,8 +164,6 @@ def build_xml(payload: dict) -> bytes:
         ol = ET.SubElement(cadastrar, "outrosLanc")
         add_text(ol, "numSeqItem", o["numSeqItem"])
         add_text(ol, "codSit", o["codSit"])
-        # Conforme XSD DH001: indrLiquidado (boolean) vem antes de vlr; e vlr vem antes das classificações
-        add_text(ol, "indrLiquidado", "true")
         add_text(ol, "vlr", o["vlr"])
         # classificações (se houver)
         if o.get("numClassA"):
@@ -190,8 +186,6 @@ def build_xml(payload: dict) -> bytes:
             add_text(di, "numSeqItem", item["numSeqItem"])
             add_text(di, "numEmpe", item["numEmpe"])
             add_text(di, "codSubItemEmpe", item["codSubItemEmpe"])
-            # Conforme XSD DH001: indrLiquidado (boolean) vem antes de vlr
-            add_text(di, "indrLiquidado", "true")
             add_text(di, "vlr", item["vlr"])           # já vem positivo
             add_text(di, "numClassA", item["numClassA"])
 
