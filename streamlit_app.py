@@ -1,654 +1,614 @@
-import re
-import io
-import datetime as dt
 import streamlit as st
+from datetime import date
+from decimal import Decimal, InvalidOperation
+import re
 import xml.etree.ElementTree as ET
 
-# =========================
-# Helpers (parsing / format)
-# =========================
-
-def only_digits(s: str) -> str:
-    return re.sub(r"\D+", "", s or "")
-
-def parse_money_br(x: str) -> float:
+# -----------------------------
+# Helpers
+# -----------------------------
+def dec_from_ptbr(s: str) -> Decimal:
     """
-    Aceita:
-      45905,55
-      45.905,55
-      45905.55
-      -31.381,26
-    Retorna float.
+    Converte "1.234.567,89" ou "1234,56" ou "1234.56" -> Decimal
     """
-    s = (x or "").strip()
+    s = (s or "").strip()
     if not s:
-        return 0.0
+        return Decimal("0.00")
     # remove espaços
     s = s.replace(" ", "")
-    # se tem vírgula, assume padrão BR: milhares "." e decimal ","
+    # se tem vírgula como decimal (pt-BR)
     if "," in s:
-        s = s.replace(".", "")
-        s = s.replace(",", ".")
-    return float(s)
+        s = s.replace(".", "")  # remove separador de milhar
+        s = s.replace(",", ".") # troca decimal
+    # mantém só número, sinal e ponto
+    s = re.sub(r"[^0-9\.\-]", "", s)
+    if s in ("", "-", "."):
+        return Decimal("0.00")
+    return Decimal(s)
 
-def fmt_money_dot(v: float) -> str:
-    # sempre com ponto e 2 casas
-    return f"{v:.2f}"
+def fmt_money(d: Decimal) -> str:
+    # XML exige ponto decimal e sem milhar, com 2 casas
+    q = d.quantize(Decimal("0.01"))
+    return f"{q:.2f}"
 
-def parse_paste_table(text: str, expected_cols: int):
+def parse_tsv_lines(text: str):
+    lines = []
+    for raw in (text or "").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        lines.append(raw)
+    return lines
+
+def split_cols(line: str):
+    # aceita TAB, ; ou múltiplos espaços
+    if "\t" in line:
+        cols = [c.strip() for c in line.split("\t")]
+    elif ";" in line:
+        cols = [c.strip() for c in line.split(";")]
+    else:
+        cols = re.split(r"\s{2,}", line.strip())
+        cols = [c.strip() for c in cols if c.strip()]
+    return cols
+
+# -----------------------------
+# Parsing inputs
+# -----------------------------
+def parse_pco_block(text: str):
     """
-    Lê uma tabela colada do Excel (TSV ou espaços múltiplos).
-    Ignora linhas vazias.
+    Espera colunas:
+    numEmpe | codSubItemEmpe | codSit | numClassA | valor
+    """
+    items_pos = []  # positivos
+    items_neg = []  # negativos -> despesaAnular (valor absoluto)
+    lines = parse_tsv_lines(text)
+    for i, line in enumerate(lines, start=1):
+        cols = split_cols(line)
+        if len(cols) < 5:
+            raise ValueError(f"PCO linha {i}: esperado 5 colunas. Recebido: {cols}")
+
+        numEmpe = cols[0]
+        codSub = cols[1].zfill(2)
+        codSit = cols[2]
+        numClassA = cols[3]
+        val = dec_from_ptbr(cols[4])
+
+        if val < 0:
+            items_neg.append({
+                "numEmpe": numEmpe,
+                "codSubItemEmpe": codSub,
+                "codSit": codSit,
+                "numClassA": numClassA,
+                "vlr": (-val)  # sem sinal no XML (como você pediu)
+            })
+        else:
+            items_pos.append({
+                "numEmpe": numEmpe,
+                "codSubItemEmpe": codSub,
+                "codSit": codSit,
+                "numClassA": numClassA,
+                "vlr": val
+            })
+
+    return items_pos, items_neg
+
+def parse_pgto_block(text: str):
+    """
+    Espera colunas:
+    CNPJ | BANCO | AGENCIA | txtCit | valor
     """
     rows = []
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        # tenta tab primeiro
-        if "\t" in line:
-            parts = [p.strip() for p in line.split("\t")]
-        else:
-            # separa por múltiplos espaços
-            parts = [p.strip() for p in re.split(r"\s{2,}|\s+\|\s+|\s+", line) if p.strip()]
-
-        # se veio "colado" com separador único e sobrou menos, tenta split por ";"
-        if len(parts) < expected_cols and ";" in line:
-            parts = [p.strip() for p in line.split(";")]
-
-        if len(parts) < expected_cols:
-            # linha incompleta: ignora, mas mostra depois
-            rows.append(("__INVALID__", parts, raw))
-            continue
-
-        rows.append(("__OK__", parts[:expected_cols], raw))
+    lines = parse_tsv_lines(text)
+    for i, line in enumerate(lines, start=1):
+        cols = split_cols(line)
+        if len(cols) < 5:
+            raise ValueError(f"Pgto linha {i}: esperado 5 colunas. Recebido: {cols}")
+        cnpj = re.sub(r"\D", "", cols[0])
+        banco = cols[1].zfill(3)
+        agencia = re.sub(r"\D", "", cols[2]).zfill(4)  # mantém 4, ajuste se precisar
+        txtCit = cols[3]
+        val = dec_from_ptbr(cols[4])
+        rows.append({
+            "cnpj": cnpj,
+            "banco": banco,
+            "agencia": agencia,
+            "txtCit": txtCit,
+            "vlr": val
+        })
     return rows
 
-# =========================
-# XML builders
-# =========================
-
-SB_NS = "http://www.tesouro.gov.br/siafi/submissao"
-DH_NS = "http://services.docHabil.cpr.siafi.tesouro.fazenda.gov.br/"
-
-ET.register_namespace("sb", SB_NS)
-ET.register_namespace("dh", DH_NS)
-
-def sb(tag):  # sb namespace tag
-    return f"{{{SB_NS}}}{tag}"
-
-def dh(tag):  # dh namespace tag
-    return f"{{{DH_NS}}}{tag}"
-
-def add_text(parent, tag, text):
-    el = ET.SubElement(parent, tag)
-    el.text = str(text)
-    return el
-
-def build_xml(payload: dict) -> bytes:
+def parse_outros_lanc(text: str):
     """
-    payload contém:
-      header, dadosBasicos, pco_items, outros_items, pgto_items, centroCusto_cfg
+    NOVO formato (você corrigiu):
+    situacao | class3 | class2 | NDD | valor
+
+    - situacao: PRV001/PRV002/PRV003/LPA385/LPA386...
+    - class3: classificação orçamentária classe 3 (sem separador, o usuário cola como vier)
+    - class2: conta do passivo (classe 2)
+    - NDD: para o centro de custo (vai em relOutrosLancamentos)
+    - valor
     """
-    # Root
-    root = ET.Element(sb("arquivo"))
+    rows = []
+    lines = parse_tsv_lines(text)
+    for i, line in enumerate(lines, start=1):
+        cols = split_cols(line)
+        if len(cols) < 5:
+            raise ValueError(f"OutrosLanc linha {i}: esperado 5 colunas. Recebido: {cols}")
+        situacao = cols[0].strip().upper()
+        class3 = re.sub(r"\D", "", cols[1]) or cols[1].strip()
+        class2 = re.sub(r"\D", "", cols[2]) or cols[2].strip()
+        ndd = cols[3].strip()  # mantém como o usuário colar (ex: 31.90.11.37)
+        val = dec_from_ptbr(cols[4])
+        rows.append({
+            "codSit": situacao,
+            "class3": class3,
+            "class2": class2,
+            "ndd": ndd,
+            "vlr": val
+        })
+    return rows
+
+# -----------------------------
+# XML builder (padrão DH001)
+# -----------------------------
+NS_SB = "http://www.tesouro.gov.br/siafi/submissao"
+NS_DH = "http://services.docHabil.cpr.siafi.tesouro.fazenda.gov.br/"
+
+ET.register_namespace("sb", NS_SB)
+ET.register_namespace("dh", NS_DH)
+
+def el(tag, text=None, ns=None):
+    if ns:
+        e = ET.Element(f"{{{ns}}}{tag}")
+    else:
+        e = ET.Element(tag)
+    if text is not None:
+        e.text = str(text)
+    return e
+
+def build_xml(data):
+    """
+    data: dict com todos os campos coletados.
+    """
+    arquivo = el("arquivo", ns=NS_SB)
 
     # header
-    header = ET.SubElement(root, sb("header"))
-    add_text(header, sb("codigoLayout"), payload["header"]["codigoLayout"])
-    add_text(header, sb("dataGeracao"), payload["header"]["dataGeracao"])
-    add_text(header, sb("sequencialGeracao"), payload["header"]["sequencialGeracao"])
-    add_text(header, sb("anoReferencia"), payload["header"]["anoReferencia"])
-    add_text(header, sb("ugResponsavel"), payload["header"]["ugResponsavel"])
-    add_text(header, sb("cpfResponsavel"), payload["header"]["cpfResponsavel"])
+    header = el("header", ns=NS_SB)
+    header.append(el("codigoLayout", data["codigoLayout"], ns=NS_SB))
+    header.append(el("dataGeracao", data["dataGeracao"], ns=NS_SB))
+    header.append(el("sequencialGeracao", str(int(data["sequencialGeracao"])), ns=NS_SB))
+    header.append(el("anoReferencia", data["anoReferencia"], ns=NS_SB))
+    header.append(el("ugResponsavel", data["ugResponsavel"], ns=NS_SB))
+    header.append(el("cpfResponsavel", data["cpfResponsavel"], ns=NS_SB))
+    arquivo.append(header)
 
-    detalhes = ET.SubElement(root, sb("detalhes"))
-    detalhe = ET.SubElement(detalhes, sb("detalhe"))
+    detalhes = el("detalhes", ns=NS_SB)
+    detalhe = el("detalhe", ns=NS_SB)
+    detalhes.append(detalhe)
+    arquivo.append(detalhes)
 
-    cadastrar = ET.SubElement(detalhe, dh("CprDhCadastrar"))
+    cpr = el("CprDhCadastrar", ns=NS_DH)
+    detalhe.append(cpr)
 
-    # Campos fixos topo
-    add_text(cadastrar, "codUgEmit", payload["topo"]["codUgEmit"])
-    add_text(cadastrar, "anoDH", payload["topo"]["anoDH"])
-    add_text(cadastrar, "codTipoDH", payload["topo"]["codTipoDH"])
-    # numDH: NÃO inserir aqui (deu erro quando vazio; e você pediu para omitir)
+    cpr.append(el("codUgEmit", data["codUgEmit"]))
+    cpr.append(el("anoDH", data["anoDH"]))
+    cpr.append(el("codTipoDH", data["codTipoDH"]))
 
     # dadosBasicos
-    db = ET.SubElement(cadastrar, "dadosBasicos")
-    add_text(db, "dtEmis", payload["dadosBasicos"]["dtEmis"])
-    add_text(db, "dtVenc", payload["dadosBasicos"]["dtVenc"])
-    add_text(db, "codUgPgto", payload["dadosBasicos"]["codUgPgto"])
-    add_text(db, "vlr", payload["dadosBasicos"]["vlr"])
-    add_text(db, "txtObser", payload["dadosBasicos"]["txtObser"])
-    add_text(db, "txtProcesso", payload["dadosBasicos"]["txtProcesso"])
-    add_text(db, "dtAteste", payload["dadosBasicos"]["dtAteste"])
-    add_text(db, "codCredorDevedor", payload["dadosBasicos"]["codCredorDevedor"])
-    add_text(db, "dtPgtoReceb", payload["dadosBasicos"]["dtPgtoReceb"])
+    db = el("dadosBasicos")
+    db.append(el("dtEmis", data["dtEmis"]))
+    db.append(el("dtVenc", data["dtVenc"]))
+    db.append(el("codUgPgto", data["codUgPgto"]))
+    db.append(el("vlr", fmt_money(data["vlr_liquido"])))
+    db.append(el("txtObser", data["txtObser"]))
+    db.append(el("txtProcesso", data["txtProcesso"]))
+    db.append(el("dtAteste", data["dtAteste"]))
+    db.append(el("codCredorDevedor", data["codCredorDevedor"]))
+    db.append(el("dtPgtoReceb", data["dtPgtoReceb"]))
 
-    doc = ET.SubElement(db, "docOrigem")
-    add_text(doc, "codIdentEmit", payload["docOrigem"]["codIdentEmit"])
-    add_text(doc, "dtEmis", payload["docOrigem"]["dtEmis"])
-    add_text(doc, "numDocOrigem", payload["docOrigem"]["numDocOrigem"])
-    add_text(doc, "vlr", payload["docOrigem"]["vlr"])
+    docOrig = el("docOrigem")
+    docOrig.append(el("codIdentEmit", data["codIdentEmit"]))
+    docOrig.append(el("dtEmis", data["doc_dtEmis"]))
+    docOrig.append(el("numDocOrigem", data["numDocOrigem"]))
+    docOrig.append(el("vlr", fmt_money(data["vlr_liquido"])))
+    db.append(docOrig)
 
-    # =========================
-    # PCO (positivos) agrupado por codSit
-    # =========================
-    # XSD aceita vários <pco>. Cada pco tem:
-    #   numSeqItem, codSit, codUgEmpe, (pcoItem 1..n)
-    # pcoItem sequência (usando o que passou no validador):
-    #   numSeqItem, numEmpe, codSubItemEmpe, vlr, numClassA
-    pco_groups = payload["pco_groups"]  # list of dicts
+    cpr.append(db)
 
-    for g in pco_groups:
-        pco = ET.SubElement(cadastrar, "pco")
-        add_text(pco, "numSeqItem", g["numSeqItem"])
-        add_text(pco, "codSit", g["codSit"])
-        add_text(pco, "codUgEmpe", g["codUgEmpe"])
-        for item in g["items"]:
-            it = ET.SubElement(pco, "pcoItem")
-            add_text(it, "numSeqItem", item["numSeqItem"])
-            add_text(it, "numEmpe", item["numEmpe"])
-            add_text(it, "codSubItemEmpe", item["codSubItemEmpe"])
-            add_text(it, "vlr", item["vlr"])
-            add_text(it, "numClassA", item["numClassA"])
+    # PCO (grupo por codSit)
+    # No XSD normalmente PCO tem: numSeqItem, codSit, codUgEmpe, lista pcoItem
+    # Vamos agrupar por codSit (mantendo ordem de aparecimento).
+    pco_by_sit = []
+    seen = set()
+    for it in data["pco_pos"]:
+        k = it["codSit"]
+        if k not in seen:
+            seen.add(k)
+            pco_by_sit.append(k)
 
-    # =========================
-    # OUTROS LANCAMENTOS (nome correto: outrosLanc)
-    # ORDEM CORRETA: depois de pco e ANTES de despesaAnular/centroCusto/dadosPgto
-    # =========================
-    # outrosLanc sequência mínima:
-    #   numSeqItem, codSit, (opcionais...), vlr, (opcionais numClassA..D etc.)
-    outros = payload["outros_items"]  # list
-    for o in outros:
-        ol = ET.SubElement(cadastrar, "outrosLanc")
-        add_text(ol, "numSeqItem", o["numSeqItem"])
-        add_text(ol, "codSit", o["codSit"])
-        # se você quiser gravar classes no XML:
-        if o.get("numClassA"):
-            add_text(ol, "numClassA", o["numClassA"])  # classe 3
-        if o.get("numClassD"):
-            add_text(ol, "numClassD", o["numClassD"])  # classe 2
-        add_text(ol, "vlr", o["vlr"])
+    seq_pco = 0
+    # map para centro de custo (numSeqPai -> lista de pcoItem seq)
+    pco_seq_map = {}  # (seq_pco) -> list of (seq_item, value)
 
-    # =========================
-    # DESPESA ANULAR (automático a partir de negativos no PCO)
-    # XSD: despesaAnular contém: numSeqItem, codSit, codUgEmpe, despesaAnularItem(1..n)
-    # despesaAnularItem: numSeqItem, numEmpe, codSubItemEmpe, vlr, numClassA
-    # =========================
-    for d in payload["despesa_anular_groups"]:
-        da = ET.SubElement(cadastrar, "despesaAnular")
-        add_text(da, "numSeqItem", d["numSeqItem"])
-        add_text(da, "codSit", d["codSit"])
-        add_text(da, "codUgEmpe", d["codUgEmpe"])
-        for item in d["items"]:
-            di = ET.SubElement(da, "despesaAnularItem")
-            add_text(di, "numSeqItem", item["numSeqItem"])
-            add_text(di, "numEmpe", item["numEmpe"])
-            add_text(di, "codSubItemEmpe", item["codSubItemEmpe"])
-            add_text(di, "vlr", item["vlr"])           # já vem positivo
-            add_text(di, "numClassA", item["numClassA"])
+    for codSit in pco_by_sit:
+        seq_pco += 1
+        pco = el("pco")
+        pco.append(el("numSeqItem", str(seq_pco)))
+        pco.append(el("codSit", codSit))
+        pco.append(el("codUgEmpe", data["codUgEmpe"]))
 
-    # =========================
-    # CENTRO DE CUSTO
-    # ordem interna relevante:
-    #   relPcoItem (0..n)
-    #   relOutrosLanc (0..n)   <-- nome correto e vem antes de relDespesaAnular
-    #   relDespesaAnular (0..n)
-    # =========================
-    cc_cfg = payload["centroCusto_cfg"]
-    cc = ET.SubElement(cadastrar, "centroCusto")
-    add_text(cc, "numSeqItem", cc_cfg["numSeqItem"])
-    add_text(cc, "codCentroCusto", cc_cfg["codCentroCusto"])
-    add_text(cc, "mesReferencia", cc_cfg["mesReferencia"])
-    add_text(cc, "anoReferencia", cc_cfg["anoReferencia"])
-    add_text(cc, "codUgBenef", cc_cfg["codUgBenef"])
-    add_text(cc, "codSIORG", cc_cfg["codSIORG"])
+        seq_item = 0
+        pco_seq_map[seq_pco] = []
 
-    # relPcoItem
-    for r in payload["rel_pco_items"]:
-        rp = ET.SubElement(cc, "relPcoItem")
-        add_text(rp, "numSeqPai", r["numSeqPai"])
-        add_text(rp, "numSeqItem", r["numSeqItem"])
-        add_text(rp, "vlr", r["vlr"])
+        for it in [x for x in data["pco_pos"] if x["codSit"] == codSit]:
+            seq_item += 1
+            pi = el("pcoItem")
+            # ORDEM (compatível com XSD): numSeqItem, numEmpe, codSubItemEmpe, indrLiquidado, vlr, numClassA
+            # (o seu erro anterior mostrou que o XSD esperava vlr antes de indrLiquidado)
+            pi.append(el("numSeqItem", str(seq_item)))
+            pi.append(el("numEmpe", it["numEmpe"]))
+            pi.append(el("codSubItemEmpe", it["codSubItemEmpe"]))
+            pi.append(el("indrLiquidado", "S"))
+            pi.append(el("vlr", fmt_money(it["vlr"])))
+            pi.append(el("numClassA", it["numClassA"]))
+            pco.append(pi)
 
-    # relOutrosLanc (se houver)
-    for r in payload["rel_outros_items"]:
-        ro = ET.SubElement(cc, "relOutrosLanc")
-        add_text(ro, "numSeqItem", r["numSeqItem"])
-        if r.get("codNatDespDet"):
-            add_text(ro, "codNatDespDet", r["codNatDespDet"])  # NDD sem separador
-        add_text(ro, "vlr", r["vlr"])
+            pco_seq_map[seq_pco].append((seq_item, it["vlr"]))
 
-    # relDespesaAnular (se houver)
-    for r in payload["rel_despesa_anular_items"]:
-        rd = ET.SubElement(cc, "relDespesaAnular")
-        add_text(rd, "numSeqPai", r["numSeqPai"])
-        add_text(rd, "numSeqItem", r["numSeqItem"])
-        add_text(rd, "vlr", r["vlr"])
+        cpr.append(pco)
 
-    # =========================
-    # DADOS PGTO (vários)
-    # =========================
-    for p in payload["pgto_items"]:
-        dp = ET.SubElement(cadastrar, "dadosPgto")
-        add_text(dp, "codCredorDevedor", p["codCredorDevedor"])
-        add_text(dp, "vlr", p["vlr"])
-        predoc = ET.SubElement(dp, "predoc")
-        add_text(predoc, "txtObser", p["txtObser"])
-        pob = ET.SubElement(predoc, "predocOB")
-        add_text(pob, "codTipoOB", p["codTipoOB"])
-        add_text(pob, "codCredorDevedor", p["codCredorDevedor"])
-        add_text(pob, "txtCit", p["txtCit"])
+    # despesaAnular (agrupada por codSit também, conforme XSD)
+    desp_by_sit = []
+    seen2 = set()
+    for it in data["pco_neg"]:
+        k = it["codSit"]
+        if k not in seen2:
+            seen2.add(k)
+            desp_by_sit.append(k)
 
-        favo = ET.SubElement(pob, "numDomiBancFavo")
-        add_text(favo, "banco", p["bancoFavo"])
-        add_text(favo, "agencia", p["agenciaFavo"])
-        add_text(favo, "conta", p["contaFavo"])
+    seq_desp = 0
+    desp_seq_map = {}  # (seq_desp) -> list (seq_item, val)
+    for codSit in desp_by_sit:
+        seq_desp += 1
+        da = el("despesaAnular")
+        da.append(el("numSeqItem", str(seq_desp)))
+        da.append(el("codSit", codSit))
+        da.append(el("codUgEmpe", data["codUgEmpe"]))
 
-        pg = ET.SubElement(pob, "numDomiBancPgto")
-        add_text(pg, "banco", p["bancoPgto"])
-        add_text(pg, "conta", p["contaPgto"])
+        seq_item = 0
+        desp_seq_map[seq_desp] = []
+
+        for it in [x for x in data["pco_neg"] if x["codSit"] == codSit]:
+            seq_item += 1
+            dai = el("despesaAnularItem")
+            dai.append(el("numSeqItem", str(seq_item)))
+            dai.append(el("numEmpe", it["numEmpe"]))
+            dai.append(el("codSubItemEmpe", it["codSubItemEmpe"]))
+            dai.append(el("indrLiquidado", "S"))
+            dai.append(el("vlr", fmt_money(it["vlr"])))
+            dai.append(el("numClassA", it["numClassA"]))
+            da.append(dai)
+
+            desp_seq_map[seq_desp].append((seq_item, it["vlr"]))
+
+        cpr.append(da)
+
+    # outrosLancamentos (opcional)
+    if data["outros"]:
+        outros = el("outrosLancamentos")
+        # cada item: codSit, class3, class2, vlr
+        seq_ol = 0
+        outros_seq_map = []  # list (seq_item, vlr) para centro custo relOutrosLancamentos
+        for r in data["outros"]:
+            seq_ol += 1
+            oli = el("outrosLancamentosItem")
+            oli.append(el("numSeqItem", str(seq_ol)))
+            oli.append(el("codSit", r["codSit"]))
+            # nomes exatos podem variar conforme XSD; aqui usamos os campos mais prováveis:
+            # class3 = despesa (classe 3), class2 = passivo (classe 2)
+            oli.append(el("numClassE", r["class3"]))  # ajuste se seu XSD chama diferente
+            oli.append(el("numClassD", r["class2"]))  # ajuste se seu XSD chama diferente
+            oli.append(el("vlr", fmt_money(r["vlr"])))
+            outros.append(oli)
+            outros_seq_map.append((seq_ol, r["vlr"], r["ndd"]))
+        cpr.append(outros)
+    else:
+        outros_seq_map = []
+
+    # centroCusto
+    cc = el("centroCusto")
+    cc.append(el("numSeqItem", "1"))
+    cc.append(el("codCentroCusto", data["codCentroCusto"]))
+    cc.append(el("mesReferencia", data["mesReferencia"]))
+    cc.append(el("anoReferencia", data["anoReferenciaCC"]))
+    cc.append(el("codUgBenef", data["codUgBenef"]))
+    cc.append(el("codSIORG", data["codSIORG"]))
+
+    # relPcoItem: referencia cada pco/pcoItem por numSeqPai (seq do PCO) e numSeqItem (seq do item)
+    for pai, items in pco_seq_map.items():
+        for (seq_item, v) in items:
+            rpi = el("relPcoItem")
+            rpi.append(el("numSeqPai", str(pai)))
+            rpi.append(el("numSeqItem", str(seq_item)))
+            rpi.append(el("vlr", fmt_money(v)))
+            cc.append(rpi)
+
+    # relDespesaAnular: referencia despesaAnular/despesaAnularItem
+    for pai, items in desp_seq_map.items():
+        for (seq_item, v) in items:
+            rda = el("relDespesaAnular")
+            rda.append(el("numSeqPai", str(pai)))
+            rda.append(el("numSeqItem", str(seq_item)))
+            rda.append(el("vlr", fmt_money(v)))
+            cc.append(rda)
+
+    # relOutrosLancamentos: usa NDD (como você pediu) + vincula item outros
+    # Como o nome/estrutura exata depende do XSD, aqui vai um formato comum:
+    # relOutrosLancamentos: numSeqItem (item outros) + ndd + vlr
+    if outros_seq_map:
+        for (seq_item, v, ndd) in outros_seq_map:
+            rol = el("relOutrosLancamentos")
+            rol.append(el("numSeqItem", str(seq_item)))
+            rol.append(el("ndd", ndd))
+            rol.append(el("vlr", fmt_money(v)))
+            cc.append(rol)
+
+    cpr.append(cc)
+
+    # dadosPgto: múltiplos blocos
+    for pg in data["pgto"]:
+        dp = el("dadosPgto")
+        dp.append(el("codCredorDevedor", pg["cnpj"]))
+        dp.append(el("vlr", fmt_money(pg["vlr"])))
+        predoc = el("predoc")
+        predoc.append(el("txtObser", data["txtObserPgto"]))
+        predocOB = el("predocOB")
+        predocOB.append(el("codTipoOB", data["codTipoOB"]))
+        predocOB.append(el("codCredorDevedor", pg["cnpj"]))
+        predocOB.append(el("txtCit", pg["txtCit"]))
+
+        favo = el("numDomiBancFavo")
+        favo.append(el("banco", pg["banco"]))
+        favo.append(el("agencia", pg["agencia"]))
+        favo.append(el("conta", data["contaFavo"]))
+        predocOB.append(favo)
+
+        pgto = el("numDomiBancPgto")
+        pgto.append(el("banco", data["bancoPgto"]))
+        pgto.append(el("conta", data["contaPgto"]))
+        predocOB.append(pgto)
+
+        predoc.append(predocOB)
+        dp.append(predoc)
+        cpr.append(dp)
 
     # trailler
-    tr = ET.SubElement(root, sb("trailler"))
-    add_text(tr, sb("quantidadeDetalhe"), "1")
+    trailler = el("trailler", ns=NS_SB)
+    trailler.append(el("quantidadeDetalhe", "1", ns=NS_SB))
+    arquivo.append(trailler)
 
-    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-    return xml_bytes
+    return arquivo
 
-
-# =========================
+# -----------------------------
 # Streamlit UI
-# =========================
-
+# -----------------------------
 st.set_page_config(page_title="Gerador DH001 (FOPAG)", layout="wide")
-st.title("Gerador de XML DH001 (SIAFI) — FOPAG")
+st.title("Gerador de XML DH001 (FOPAG) — COMAER / SIAFI")
 
-def ti(label, value="", prefix=""):
-    return st.text_input(label, value=value, key=f"{prefix}:{label}")
+tabs = st.tabs([
+    "Dados Básicos",
+    "PCO (colar)",
+    "Dados Pgto (colar)",
+    "Outros Lançamentos (colar)",
+    "Centro de Custo",
+    "Gerar XML"
+])
 
-def ta(label, value="", prefix="", height=160):
-    return st.text_area(label, value=value, height=height, key=f"{prefix}:{label}")
+today = date.today()
 
-today = dt.date.today()
+# Estado
+if "pco_text" not in st.session_state:
+    st.session_state.pco_text = ""
+if "pgto_text" not in st.session_state:
+    st.session_state.pgto_text = ""
+if "outros_text" not in st.session_state:
+    st.session_state.outros_text = ""
 
-tab_basicos, tab_pco, tab_outros, tab_cc, tab_pgto, tab_gerar = st.tabs(
-    ["Dados Básicos", "PCO (colar)", "Outros Lançamentos (colar)", "Centro de Custo", "Pagamentos (colar)", "Gerar XML"]
-)
+with tabs[0]:
+    st.subheader("Dados Básicos")
+    c1, c2, c3 = st.columns(3)
 
-# -------------------------
-# Dados Básicos
-# -------------------------
-with tab_basicos:
-    prefix = "basicos"
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        codUgEmit = ti("codUgEmit", "120052", prefix)
-        anoDH = ti("anoDH", str(today.year), prefix)
-        codTipoDH = ti("codTipoDH", "FL", prefix)
-
-    with col2:
-        dtEmis = ti("dtEmis (AAAA-MM-DD)", str(today), prefix)
-        dtVenc = ti("dtVenc (AAAA-MM-DD)", str(today), prefix)
-        dtAteste = ti("dtAteste (AAAA-MM-DD)", str(today), prefix)
-
-    with col3:
-        codUgPgto = ti("codUgPgto", "120052", prefix)
-        codCredorDevedor = ti("codCredorDevedor (UG)", "120052", prefix)
-        dtPgtoReceb = ti("dtPgtoReceb (AAAA-MM-DD)", str(today), prefix)
+    with c1:
+        codigoLayout = st.text_input("codigoLayout", value="DH001", key="t0_db_codigoLayout")
+        ugResponsavel = st.text_input("ugResponsavel", value="120052", key="t0_db_ugResp")
+        cpfResponsavel = st.text_input("cpfResponsavel", value="09857528740", key="t0_db_cpfResp")
+    with c2:
+        dataGeracao = st.text_input("dataGeracao (DD/MM/AAAA)", value=today.strftime("%d/%m/%Y"), key="t0_db_dataGeracao")
+        sequencialGeracao = st.text_input("sequencialGeracao (sem zero à esquerda)", value="1", key="t0_db_seqGer")
+        anoReferencia = st.text_input("anoReferencia", value=str(today.year), key="t0_db_anoRef")
+    with c3:
+        codUgEmit = st.text_input("codUgEmit", value="120052", key="t0_db_codUgEmit")
+        anoDH = st.text_input("anoDH", value=str(today.year), key="t0_db_anoDH")
+        codTipoDH = st.text_input("codTipoDH", value="FL", key="t0_db_codTipoDH")
 
     st.divider()
-    col4, col5 = st.columns(2)
-    with col4:
-        txtObser = ti("txtObser", "PAGAMENTO DA FOPAG JANEIRO/2026 CIVIL", prefix)
-        txtProcesso = ti("txtProcesso", "67420.000835/2026-37", prefix)
-    with col5:
-        numDocOrigem = ti("numDocOrigem", "FOPAG.CIVL.JAN", prefix)
-        codIdentEmit = ti("codIdentEmit", "120052", prefix)
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        dtEmis = st.text_input("dtEmis (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtEmis")
+        dtVenc = st.text_input("dtVenc (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtVenc")
+        codUgPgto = st.text_input("codUgPgto", value="120052", key="t0_db_codUgPgto")
+    with c5:
+        txtObser = st.text_input("txtObser", value="PAGAMENTO DA FOPAG JANEIRO/2026 CIVIL", key="t0_db_txtObser")
+        txtProcesso = st.text_input("txtProcesso", value="67420.000835/2026-37", key="t0_db_txtProc")
+        dtAteste = st.text_input("dtAteste (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtAteste")
+    with c6:
+        codCredorDevedor = st.text_input("codCredorDevedor (UG)", value="120052", key="t0_db_codCredDev")
+        dtPgtoReceb = st.text_input("dtPgtoReceb (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtPgtoReceb")
+        codIdentEmit = st.text_input("docOrigem.codIdentEmit", value="120052", key="t0_db_doc_codIdentEmit")
 
-    st.info("⚠️ O valor líquido (dadosBasicos.vlr) será calculado automaticamente a partir do PCO (positivos - negativos).")
+    c7, c8, c9 = st.columns(3)
+    with c7:
+        doc_dtEmis = st.text_input("docOrigem.dtEmis (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_doc_dtEmis")
+    with c8:
+        numDocOrigem = st.text_input("docOrigem.numDocOrigem", value="FOPAG.CIVL.JAN", key="t0_db_doc_numDoc")
+    with c9:
+        st.info("O valor líquido (vlr) será calculado automaticamente a partir do PCO/DespesaAnular.")
 
-# -------------------------
-# PCO (colar)
-# -------------------------
-with tab_pco:
-    prefix = "pco"
-    st.markdown("Cole linhas no formato (5 colunas): **numEmpe | subitem(2) | codSit | numClassA | valor**")
-    st.caption("Ex.: 2026NE000055    46    DFL033    113110105    45905,55")
-    pco_text = ta("PCO (colar)", "", prefix, height=220)
-    codUgEmpe = ti("codUgEmpe (para PCO/DespesaAnular)", "120052", prefix)
+with tabs[1]:
+    st.subheader("PCO — cole linhas do Excel")
+    st.caption("Formato por linha: numEmpe<TAB>subitem<TAB>codSit<TAB>numClassA<TAB>valor  | valor negativo vira DespesaAnular automaticamente.")
+    st.session_state.pco_text = st.text_area(
+        "Cole aqui o PCO",
+        value=st.session_state.pco_text,
+        height=240,
+        key="t1_pco_text_area"
+    )
+    st.text("Exemplo:")
+    st.code("2026NE000055\t46\tDFL033\t113110105\t45905,55\n2026NE000055\t46\tAFL033\t113110105\t-31381,26", language="text")
 
-# -------------------------
-# Outros Lançamentos (colar)
-# -------------------------
-with tab_outros:
-    prefix = "outros"
-    st.markdown("Cole linhas no formato (5 colunas): **codSit | classe3 | classe2 | NDD | valor**")
-    st.caption("Ex.: PRV001    311110101    211110101    31901137    223,89")
-    st.caption("Situações comuns: PRV001, PRV002, PRV003, LPA385, LPA386")
-    outros_text = ta("Outros Lançamentos (colar) — opcional", "", prefix, height=220)
-
-# -------------------------
-# Centro de Custo
-# -------------------------
-with tab_cc:
-    prefix = "cc"
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        codCentroCusto = ti("codCentroCusto", "221A00", prefix)
-    with col2:
-        mesReferencia = ti("mesReferencia (MM)", "01", prefix)
-    with col3:
-        anoReferenciaCC = ti("anoReferencia", str(today.year), prefix)
-    with col4:
-        codUgBenef = ti("codUgBenef", "120052", prefix)
-    with col5:
-        codSIORG = ti("codSIORG", "2332", prefix)
-
-# -------------------------
-# Pagamentos (colar)
-# -------------------------
-with tab_pgto:
-    prefix = "pgto"
-    st.markdown("Cole linhas no formato (5 colunas): **CNPJ | banco | agencia | txtCit | valor**")
-    st.caption("Ex.: 00.000.000/0001-91    001    1607    120052FPAG999    57.079.618,21")
-    pgto_text = ta("Pagamentos (colar)", "", prefix, height=220)
-
-    colA, colB, colC = st.columns(3)
-    with colA:
-        codTipoOB = ti("codTipoOB", "OBF", prefix)
-    with colB:
-        contaFavo = ti("conta FAVO", "FOPAG", prefix)
-    with colC:
-        bancoPgto = ti("banco PGTO", "002", prefix)
-        contaPgto = ti("conta PGTO", "UNICA", prefix)
-
-# -------------------------
-# Gerar / Checagens
-# -------------------------
-with tab_gerar:
-    prefix = "gerar"
-
-    # Header info
-    st.subheader("Header do arquivo")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        codigoLayout = ti("codigoLayout", "DH001", prefix)
-        ugResponsavel = ti("ugResponsavel", "120052", prefix)
-    with col2:
-        dataGeracao = ti("dataGeracao (DD/MM/AAAA)", today.strftime("%d/%m/%Y"), prefix)
-        sequencialGeracao = ti("sequencialGeracao (sem zero à esquerda)", "1", prefix)
-    with col3:
-        anoReferenciaHeader = ti("anoReferencia (header)", str(today.year), prefix)
-        cpfResponsavel = ti("cpfResponsavel", "09857528740", prefix)
-
-    # =========
-    # Parse PCO
-    # =========
-    pco_rows = parse_paste_table(pco_text, expected_cols=5)
-    invalid_pco = [r for r in pco_rows if r[0] == "__INVALID__"]
-    ok_pco = [r for r in pco_rows if r[0] == "__OK__"]
-
-    pco_lines = []
-    neg_lines = []
-    for _, parts, raw in ok_pco:
-        numEmpe, subitem, sit, classA, val = parts
-        v = parse_money_br(val)
-        item = {
-            "numEmpe": numEmpe.strip(),
-            "codSubItemEmpe": subitem.strip().zfill(2),
-            "codSit": sit.strip(),
-            "numClassA": only_digits(classA.strip()),
-            "vlr_float": v,
-            "raw": raw
-        }
-        if v < 0:
-            neg_lines.append(item)
-        else:
-            pco_lines.append(item)
-
-    total_pos = sum(x["vlr_float"] for x in pco_lines)
-    total_neg = sum(abs(x["vlr_float"]) for x in neg_lines)
-    liquido = total_pos - total_neg
-
-    # =========
-    # Parse Outros
-    # =========
-    outros_rows = parse_paste_table(outros_text, expected_cols=5) if (outros_text or "").strip() else []
-    invalid_outros = [r for r in outros_rows if r[0] == "__INVALID__"]
-    ok_outros = [r for r in outros_rows if r[0] == "__OK__"]
-
-    outros_items = []
-    total_outros = 0.0
-    for idx, (_, parts, raw) in enumerate(ok_outros, start=1):
-        sit, class3, class2, ndd, val = parts
-        v = parse_money_br(val)
-        total_outros += v
-        outros_items.append({
-            "numSeqItem": str(idx),
-            "codSit": sit.strip().upper(),
-            "numClassA": only_digits(class3),  # classe 3
-            "numClassD": only_digits(class2),  # classe 2
-            "codNatDespDet": only_digits(ndd), # NDD p/ centro de custo
-            "vlr": fmt_money_dot(v),
-            "vlr_float": v,
-            "raw": raw
-        })
-
-    # =========
-    # Parse Pagamentos
-    # =========
-    pgto_rows = parse_paste_table(pgto_text, expected_cols=5)
-    invalid_pgto = [r for r in pgto_rows if r[0] == "__INVALID__"]
-    ok_pgto = [r for r in pgto_rows if r[0] == "__OK__"]
-
-    pgto_items = []
-    total_pgto = 0.0
-    for _, parts, raw in ok_pgto:
-        cnpj, banco, agencia, txtcit, val = parts
-        v = parse_money_br(val)
-        total_pgto += v
-        pgto_items.append({
-            "codCredorDevedor": only_digits(cnpj),
-            "vlr": fmt_money_dot(v),
-            "vlr_float": v,
-            "txtObser": "PAGAMENTO FOPAG",
-            "codTipoOB": codTipoOB.strip(),
-            "txtCit": txtcit.strip(),
-            "bancoFavo": banco.strip().zfill(3),
-            "agenciaFavo": agencia.strip().zfill(4),
-            "contaFavo": contaFavo.strip(),
-            "bancoPgto": bancoPgto.strip().zfill(3),
-            "contaPgto": contaPgto.strip(),
-            "raw": raw
-        })
-
-    # =========
-    # Build PCO groups (positivos) por codSit
-    # =========
-    pco_by_sit = {}
-    for item in pco_lines:
-        pco_by_sit.setdefault(item["codSit"], []).append(item)
-
-    pco_groups = []
-    rel_pco_items = []
-    seq_pco = 0
-    for sit, items in pco_by_sit.items():
-        seq_pco += 1
-        group_seq = str(seq_pco)
-        group_items = []
-        for i, it in enumerate(items, start=1):
-            group_items.append({
-                "numSeqItem": str(i),
-                "numEmpe": it["numEmpe"],
-                "codSubItemEmpe": it["codSubItemEmpe"],
-                "vlr": fmt_money_dot(it["vlr_float"]),
-                "numClassA": it["numClassA"],
-            })
-            rel_pco_items.append({
-                "numSeqPai": group_seq,
-                "numSeqItem": str(i),
-                "vlr": fmt_money_dot(it["vlr_float"])
-            })
-        pco_groups.append({
-            "numSeqItem": group_seq,
-            "codSit": sit,
-            "codUgEmpe": codUgEmpe.strip(),
-            "items": group_items
-        })
-
-    # =========
-    # Build DespesaAnular groups (negativos) por codSit
-    # =========
-    neg_by_sit = {}
-    for item in neg_lines:
-        neg_by_sit.setdefault(item["codSit"], []).append(item)
-
-    despesa_anular_groups = []
-    rel_despesa_anular_items = []
-    seq_da = 0
-    for sit, items in neg_by_sit.items():
-        seq_da += 1
-        group_seq = str(seq_da)
-        group_items = []
-        for i, it in enumerate(items, start=1):
-            v_abs = abs(it["vlr_float"])
-            group_items.append({
-                "numSeqItem": str(i),
-                "numEmpe": it["numEmpe"],
-                "codSubItemEmpe": it["codSubItemEmpe"],
-                "vlr": fmt_money_dot(v_abs),     # SEM sinal
-                "numClassA": it["numClassA"]
-            })
-            rel_despesa_anular_items.append({
-                "numSeqPai": group_seq,
-                "numSeqItem": str(i),
-                "vlr": fmt_money_dot(v_abs)
-            })
-        despesa_anular_groups.append({
-            "numSeqItem": group_seq,
-            "codSit": sit,
-            "codUgEmpe": codUgEmpe.strip(),
-            "items": group_items
-        })
-
-    # =========
-    # Centro de custo: relOutrosLanc
-    # =========
-    rel_outros_items = []
-    for o in outros_items:
-        rel_outros_items.append({
-            "numSeqItem": o["numSeqItem"],
-            "codNatDespDet": o["codNatDespDet"],
-            "vlr": o["vlr"]
-        })
-
-    # =========
-    # Dados básicos (vlr = líquido)
-    # =========
-    dadosBasicosVlr = fmt_money_dot(liquido)
-
-    # docOrigem vlr acompanha dadosBasicos vlr
-    docOrigemVlr = dadosBasicosVlr
-
-    # =========
-    # Checagens
-    # =========
-    st.subheader("Checagens")
-
-    st.write(f"Total POS (PCO): **{fmt_money_dot(total_pos)}**")
-    st.write(f"Total NEG (DespesaAnular): **{fmt_money_dot(total_neg)}**")
-    st.write(f"Valor líquido (Dados Básicos): **{dadosBasicosVlr}**")
-    st.write(f"Total OutrosLanc: **{fmt_money_dot(total_outros)}** (não entra no líquido)")
-    st.write(f"Soma Pagamentos (dadosPgto): **{fmt_money_dot(total_pgto)}**")
-
-    # Centro de custo (como você vinha usando): relPco + relOutros - relDespesaAnular
-    soma_cc = (total_pos + total_outros - total_neg)
-    st.write(f"Soma CentroCusto (relPco + relOutros - relDespesaAnular): **{fmt_money_dot(soma_cc)}**")
-
-    if invalid_pco:
-        st.warning(f"PCO: {len(invalid_pco)} linha(s) com colunas insuficientes (foram ignoradas).")
-    if invalid_outros:
-        st.warning(f"OutrosLanc: {len(invalid_outros)} linha(s) inválida(s) (foram ignoradas).")
-    if invalid_pgto:
-        st.warning(f"Pagamentos: {len(invalid_pgto)} linha(s) inválida(s) (foram ignoradas).")
-
-    # Regra de consistência principal (SIAFI): soma pagamentos deve bater com o líquido
-    if abs(total_pgto - liquido) > 0.005:
-        st.error("⚠️ Soma de pagamentos NÃO bate com o valor líquido (dadosBasicos).")
-    else:
-        st.success("✅ Soma de pagamentos bate com o valor líquido (dadosBasicos).")
-
-    # =========
-    # Build payload e gerar XML
-    # =========
-    payload = {
-        "header": {
-            "codigoLayout": codigoLayout.strip(),
-            "dataGeracao": dataGeracao.strip(),
-            "sequencialGeracao": str(int(sequencialGeracao.strip() or "1")),  # remove zero à esquerda
-            "anoReferencia": anoReferenciaHeader.strip(),
-            "ugResponsavel": ugResponsavel.strip(),
-            "cpfResponsavel": only_digits(cpfResponsavel),
-        },
-        "topo": {
-            "codUgEmit": codUgEmit.strip(),
-            "anoDH": anoDH.strip(),
-            "codTipoDH": codTipoDH.strip(),
-        },
-        "dadosBasicos": {
-            "dtEmis": dtEmis.strip(),
-            "dtVenc": dtVenc.strip(),
-            "codUgPgto": codUgPgto.strip(),
-            "vlr": dadosBasicosVlr,
-            "txtObser": txtObser.strip(),
-            "txtProcesso": txtProcesso.strip(),
-            "dtAteste": dtAteste.strip(),
-            "codCredorDevedor": codCredorDevedor.strip(),
-            "dtPgtoReceb": dtPgtoReceb.strip(),
-        },
-        "docOrigem": {
-            "codIdentEmit": codIdentEmit.strip(),
-            "dtEmis": dtEmis.strip(),
-            "numDocOrigem": numDocOrigem.strip(),
-            "vlr": docOrigemVlr,
-        },
-        "pco_groups": pco_groups,
-        # outrosLanc é opcional: se vazio, lista vazia => não gera tag
-        "outros_items": [
-            {
-                "numSeqItem": o["numSeqItem"],
-                "codSit": o["codSit"],
-                "numClassA": o["numClassA"],
-                "numClassD": o["numClassD"],
-                "vlr": o["vlr"]
-            } for o in outros_items
-        ],
-        "despesa_anular_groups": despesa_anular_groups,
-        "centroCusto_cfg": {
-            "numSeqItem": "1",
-            "codCentroCusto": codCentroCusto.strip(),
-            "mesReferencia": mesReferencia.strip().zfill(2),
-            "anoReferencia": anoReferenciaCC.strip(),
-            "codUgBenef": codUgBenef.strip(),
-            "codSIORG": codSIORG.strip(),
-        },
-        "rel_pco_items": rel_pco_items,
-        "rel_outros_items": rel_outros_items,
-        "rel_despesa_anular_items": rel_despesa_anular_items,
-        "pgto_items": pgto_items,
-    }
-
-    xml_bytes = build_xml(payload)
-
-    st.download_button(
-        "⬇️ Baixar XML (DH001)",
-        data=xml_bytes,
-        file_name="DH001_FOPAG.xml",
-        mime="application/xml",
-        key="download_xml_btn"
+with tabs[2]:
+    st.subheader("Dados de Pagamento — cole linhas do Excel")
+    st.caption("Formato por linha: CNPJ<TAB>BANCO<TAB>AGENCIA<TAB>txtCit<TAB>valor")
+    st.session_state.pgto_text = st.text_area(
+        "Cole aqui os pagamentos (dadosPgto)",
+        value=st.session_state.pgto_text,
+        height=240,
+        key="pgto_text_area"
     )
 
-    st.caption("Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador.")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        txtObserPgto = st.text_input("predoc.txtObser", value="PAGAMENTO FOPAG", key="t2_pg_txtObser")
+    with c2:
+        codTipoOB = st.text_input("predocOB.codTipoOB", value="OBF", key="t2_pg_codTipoOB")
+    with c3:
+        contaFavo = st.text_input("numDomiBancFavo.conta", value="FOPAG", key="t2_pg_contaFavo")
+
+    c4, c5 = st.columns(2)
+    with c4:
+        bancoPgto = st.text_input("numDomiBancPgto.banco", value="002", key="t2_pg_bancoPgto")
+    with c5:
+        contaPgto = st.text_input("numDomiBancPgto.conta", value="UNICA", key="t2_pg_contaPgto")
+
+with tabs[3]:
+    st.subheader("Outros Lançamentos — opcional (pode ficar em branco)")
+    st.caption("Formato por linha: situacao<TAB>class3<TAB>class2<TAB>NDD<TAB>valor")
+    st.session_state.outros_text = st.text_area(
+        "Cole aqui Outros Lançamentos",
+        value=st.session_state.outros_text,
+        height=220,
+        key="t3_outros_text_area"
+    )
+    st.text("Exemplo:")
+    st.code("PRV001\t311110100\t211110101\t31.90.11.37\t223,89", language="text")
+    st.info("Se você não colar nada aqui, a tag <outrosLancamentos> NÃO será gerada no XML.")
+
+with tabs[4]:
+    st.subheader("Centro de Custo")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        codCentroCusto = st.text_input("codCentroCusto", value="221A00", key="t4_cc_codCentro")
+    with col2:
+        mesReferencia = st.text_input("mesReferencia (MM)", value="01", key="t4_cc_mesRef")
+    with col3:
+        anoReferenciaCC = st.text_input("anoReferencia (CC)", value=str(today.year), key="t4_cc_anoRef")
+    with col4:
+        codUgBenef = st.text_input("codUgBenef", value="120052", key="t4_cc_codUgBenef")
+    with col5:
+        codSIORG = st.text_input("codSIORG", value="2332", key="t4_cc_codSiorg")
+
+    st.caption("Obs: o app monta automaticamente relPcoItem, relDespesaAnular e relOutrosLancamentos (com NDD).")
+
+with tabs[5]:
+    st.subheader("Gerar XML + Checagens")
+
+    # Parse e checagens
+    try:
+        pco_pos, pco_neg = parse_pco_block(st.session_state.pco_text) if st.session_state.pco_text.strip() else ([], [])
+        pgto = parse_pgto_block(st.session_state.pgto_text) if st.session_state.pgto_text.strip() else []
+        outros = parse_outros_lanc(st.session_state.outros_text) if st.session_state.outros_text.strip() else []
+
+        total_pos = sum((x["vlr"] for x in pco_pos), Decimal("0.00"))
+        total_neg = sum((x["vlr"] for x in pco_neg), Decimal("0.00"))  # já está absoluto
+        vlr_liquido = (total_pos - total_neg).quantize(Decimal("0.01"))
+
+        soma_pgto = sum((x["vlr"] for x in pgto), Decimal("0.00")).quantize(Decimal("0.01"))
+        total_outros = sum((x["vlr"] for x in outros), Decimal("0.00")).quantize(Decimal("0.01"))
+
+        soma_centro = (total_pos + total_outros - total_neg).quantize(Decimal("0.01"))
+
+        st.markdown("### Checagens")
+        st.write(f"**Total POS (PCO):** {fmt_money(total_pos)}")
+        st.write(f"**Total NEG (DespesaAnular):** {fmt_money(total_neg)}")
+        st.write(f"**Valor líquido (Dados Básicos):** {fmt_money(vlr_liquido)}")
+        st.write(f"**Soma Pagamentos (dadosPgto):** {fmt_money(soma_pgto)}")
+        st.write(f"**Total OutrosLanc:** {fmt_money(total_outros)}")
+        st.write(f"**Soma CentroCusto (relPco + relOutros - relDespesaAnular):** {fmt_money(soma_centro)}")
+
+        if soma_pgto != vlr_liquido:
+            st.warning("⚠️ Soma de pagamentos NÃO bate com o valor líquido (dadosBasicos).")
+        else:
+            st.success("✅ Soma de pagamentos bate com o valor líquido (dadosBasicos).")
+
+        # Monta dados p/ XML
+        payload = {
+            "codigoLayout": codigoLayout,
+            "dataGeracao": dataGeracao,
+            "sequencialGeracao": sequencialGeracao,
+            "anoReferencia": anoReferencia,
+            "ugResponsavel": ugResponsavel,
+            "cpfResponsavel": cpfResponsavel,
+            "codUgEmit": codUgEmit,
+            "anoDH": anoDH,
+            "codTipoDH": codTipoDH,
+
+            "dtEmis": dtEmis,
+            "dtVenc": dtVenc,
+            "codUgPgto": codUgPgto,
+            "vlr_liquido": vlr_liquido,
+            "txtObser": txtObser,
+            "txtProcesso": txtProcesso,
+            "dtAteste": dtAteste,
+            "codCredorDevedor": codCredorDevedor,
+            "dtPgtoReceb": dtPgtoReceb,
+
+            "codIdentEmit": codIdentEmit,
+            "doc_dtEmis": doc_dtEmis,
+            "numDocOrigem": numDocOrigem,
+
+            "codUgEmpe": codUgEmit,  # normalmente é a UG que emite/empenha; ajuste se precisar
+            "pco_pos": pco_pos,
+            "pco_neg": pco_neg,
+
+            "pgto": pgto,
+            "txtObserPgto": txtObserPgto,
+            "codTipoOB": codTipoOB,
+            "contaFavo": contaFavo,
+            "bancoPgto": bancoPgto,
+            "contaPgto": contaPgto,
+
+            "outros": outros,
+
+            "codCentroCusto": codCentroCusto,
+            "mesReferencia": mesReferencia,
+            "anoReferenciaCC": anoReferenciaCC,
+            "codUgBenef": codUgBenef,
+            "codSIORG": codSIORG,
+        }
+
+        gerar = st.button("Gerar XML", key="t5_btn_gerar_xml")
+
+        if gerar:
+            root = build_xml(payload)
+            xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            st.download_button(
+                "Baixar XML (.xml)",
+                data=xml_bytes,
+                file_name="DH001_FOPAG.xml",
+                mime="application/xml",
+                key="t5_dl_xml"
+            )
+            st.code(xml_bytes.decode("utf-8"), language="xml")
+
+    except Exception as e:
+        st.error(f"Erro ao processar: {e}")
