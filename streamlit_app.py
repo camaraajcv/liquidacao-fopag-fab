@@ -417,38 +417,38 @@ with tabs[0]:
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        codigoLayout = st.text_input("codigoLayout", value="DH001", key="db_codigoLayout")
-        ugResponsavel = st.text_input("ugResponsavel", value="120052", key="db_ugResp")
-        cpfResponsavel = st.text_input("cpfResponsavel", value="09857528740", key="db_cpfResp")
+        codigoLayout = st.text_input("codigoLayout", value="DH001", key="t0_db_codigoLayout")
+        ugResponsavel = st.text_input("ugResponsavel", value="120052", key="t0_db_ugResp")
+        cpfResponsavel = st.text_input("cpfResponsavel", value="09857528740", key="t0_db_cpfResp")
     with c2:
-        dataGeracao = st.text_input("dataGeracao (DD/MM/AAAA)", value=today.strftime("%d/%m/%Y"), key="db_dataGeracao")
-        sequencialGeracao = st.text_input("sequencialGeracao (sem zero à esquerda)", value="1", key="db_seqGer")
-        anoReferencia = st.text_input("anoReferencia", value=str(today.year), key="db_anoRef")
+        dataGeracao = st.text_input("dataGeracao (DD/MM/AAAA)", value=today.strftime("%d/%m/%Y"), key="t0_db_dataGeracao")
+        sequencialGeracao = st.text_input("sequencialGeracao (sem zero à esquerda)", value="1", key="t0_db_seqGer")
+        anoReferencia = st.text_input("anoReferencia", value=str(today.year), key="t0_db_anoRef")
     with c3:
-        codUgEmit = st.text_input("codUgEmit", value="120052", key="db_codUgEmit")
-        anoDH = st.text_input("anoDH", value=str(today.year), key="db_anoDH")
-        codTipoDH = st.text_input("codTipoDH", value="FL", key="db_codTipoDH")
+        codUgEmit = st.text_input("codUgEmit", value="120052", key="t0_db_codUgEmit")
+        anoDH = st.text_input("anoDH", value=str(today.year), key="t0_db_anoDH")
+        codTipoDH = st.text_input("codTipoDH", value="FL", key="t0_db_codTipoDH")
 
     st.divider()
     c4, c5, c6 = st.columns(3)
     with c4:
-        dtEmis = st.text_input("dtEmis (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="db_dtEmis")
-        dtVenc = st.text_input("dtVenc (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="db_dtVenc")
-        codUgPgto = st.text_input("codUgPgto", value="120052", key="db_codUgPgto")
+        dtEmis = st.text_input("dtEmis (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtEmis")
+        dtVenc = st.text_input("dtVenc (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtVenc")
+        codUgPgto = st.text_input("codUgPgto", value="120052", key="t0_db_codUgPgto")
     with c5:
-        txtObser = st.text_input("txtObser", value="PAGAMENTO DA FOPAG JANEIRO/2026 CIVIL", key="db_txtObser")
-        txtProcesso = st.text_input("txtProcesso", value="67420.000835/2026-37", key="db_txtProc")
-        dtAteste = st.text_input("dtAteste (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="db_dtAteste")
+        txtObser = st.text_input("txtObser", value="PAGAMENTO DA FOPAG JANEIRO/2026 CIVIL", key="t0_db_txtObser")
+        txtProcesso = st.text_input("txtProcesso", value="67420.000835/2026-37", key="t0_db_txtProc")
+        dtAteste = st.text_input("dtAteste (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtAteste")
     with c6:
-        codCredorDevedor = st.text_input("codCredorDevedor (UG)", value="120052", key="db_codCredDev")
-        dtPgtoReceb = st.text_input("dtPgtoReceb (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="db_dtPgtoReceb")
-        codIdentEmit = st.text_input("docOrigem.codIdentEmit", value="120052", key="db_doc_codIdentEmit")
+        codCredorDevedor = st.text_input("codCredorDevedor (UG)", value="120052", key="t0_db_codCredDev")
+        dtPgtoReceb = st.text_input("dtPgtoReceb (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_dtPgtoReceb")
+        codIdentEmit = st.text_input("docOrigem.codIdentEmit", value="120052", key="t0_db_doc_codIdentEmit")
 
     c7, c8, c9 = st.columns(3)
     with c7:
-        doc_dtEmis = st.text_input("docOrigem.dtEmis (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="db_doc_dtEmis")
+        doc_dtEmis = st.text_input("docOrigem.dtEmis (AAAA-MM-DD)", value=today.strftime("%Y-%m-%d"), key="t0_db_doc_dtEmis")
     with c8:
-        numDocOrigem = st.text_input("docOrigem.numDocOrigem", value="FOPAG.CIVL.JAN", key="db_doc_numDoc")
+        numDocOrigem = st.text_input("docOrigem.numDocOrigem", value="FOPAG.CIVL.JAN", key="t0_db_doc_numDoc")
     with c9:
         st.info("O valor líquido (vlr) será calculado automaticamente a partir do PCO/DespesaAnular.")
 
@@ -459,7 +459,7 @@ with tabs[1]:
         "Cole aqui o PCO",
         value=st.session_state.pco_text,
         height=240,
-        key="pco_text_area"
+        key="t1_pco_text_area"
     )
     st.text("Exemplo:")
     st.code("2026NE000055\t46\tDFL033\t113110105\t45905,55\n2026NE000055\t46\tAFL033\t113110105\t-31381,26", language="text")
@@ -476,17 +476,17 @@ with tabs[2]:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        txtObserPgto = st.text_input("predoc.txtObser", value="PAGAMENTO FOPAG", key="pg_txtObser")
+        txtObserPgto = st.text_input("predoc.txtObser", value="PAGAMENTO FOPAG", key="t2_pg_txtObser")
     with c2:
-        codTipoOB = st.text_input("predocOB.codTipoOB", value="OBF", key="pg_codTipoOB")
+        codTipoOB = st.text_input("predocOB.codTipoOB", value="OBF", key="t2_pg_codTipoOB")
     with c3:
-        contaFavo = st.text_input("numDomiBancFavo.conta", value="FOPAG", key="pg_contaFavo")
+        contaFavo = st.text_input("numDomiBancFavo.conta", value="FOPAG", key="t2_pg_contaFavo")
 
     c4, c5 = st.columns(2)
     with c4:
-        bancoPgto = st.text_input("numDomiBancPgto.banco", value="002", key="pg_bancoPgto")
+        bancoPgto = st.text_input("numDomiBancPgto.banco", value="002", key="t2_pg_bancoPgto")
     with c5:
-        contaPgto = st.text_input("numDomiBancPgto.conta", value="UNICA", key="pg_contaPgto")
+        contaPgto = st.text_input("numDomiBancPgto.conta", value="UNICA", key="t2_pg_contaPgto")
 
 with tabs[3]:
     st.subheader("Outros Lançamentos — opcional (pode ficar em branco)")
@@ -495,7 +495,7 @@ with tabs[3]:
         "Cole aqui Outros Lançamentos",
         value=st.session_state.outros_text,
         height=220,
-        key="outros_text_area"
+        key="t3_outros_text_area"
     )
     st.text("Exemplo:")
     st.code("PRV001\t311110100\t211110101\t31.90.11.37\t223,89", language="text")
@@ -505,15 +505,15 @@ with tabs[4]:
     st.subheader("Centro de Custo")
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        codCentroCusto = st.text_input("codCentroCusto", value="221A00", key="cc_codCentro")
+        codCentroCusto = st.text_input("codCentroCusto", value="221A00", key="t4_cc_codCentro")
     with col2:
-        mesReferencia = st.text_input("mesReferencia (MM)", value="01", key="cc_mesRef")
+        mesReferencia = st.text_input("mesReferencia (MM)", value="01", key="t4_cc_mesRef")
     with col3:
-        anoReferenciaCC = st.text_input("anoReferencia (CC)", value=str(today.year), key="cc_anoRef")
+        anoReferenciaCC = st.text_input("anoReferencia (CC)", value=str(today.year), key="t4_cc_anoRef")
     with col4:
-        codUgBenef = st.text_input("codUgBenef", value="120052", key="cc_codUgBenef")
+        codUgBenef = st.text_input("codUgBenef", value="120052", key="t4_cc_codUgBenef")
     with col5:
-        codSIORG = st.text_input("codSIORG", value="2332", key="cc_codSiorg")
+        codSIORG = st.text_input("codSIORG", value="2332", key="t4_cc_codSiorg")
 
     st.caption("Obs: o app monta automaticamente relPcoItem, relDespesaAnular e relOutrosLancamentos (com NDD).")
 
@@ -594,7 +594,7 @@ with tabs[5]:
             "codSIORG": codSIORG,
         }
 
-        gerar = st.button("Gerar XML", key="btn_gerar_xml")
+        gerar = st.button("Gerar XML", key="t5_btn_gerar_xml")
 
         if gerar:
             root = build_xml(payload)
@@ -604,7 +604,7 @@ with tabs[5]:
                 data=xml_bytes,
                 file_name="DH001_FOPAG.xml",
                 mime="application/xml",
-                key="dl_xml"
+                key="t5_dl_xml"
             )
             st.code(xml_bytes.decode("utf-8"), language="xml")
 
