@@ -313,7 +313,7 @@ def build_xml(payload: dict) -> bytes:
 # Streamlit UI
 # -------------------------
 
-st.set_page_config(page_title="Gerador DH001 (SIAFI) - XML", layout="wide")
+st.set_page_config(page_title="Gerador LIQUIDAÇÃO (SIAFI) - XML", layout="wide")
 st.title("Gerador de XML DH001 (DocHabil / CPR)")
 
 tab_header, tab_db, tab_pco, tab_da, tab_outros, tab_pgto, tab_cc, tab_gerar = st.tabs([
