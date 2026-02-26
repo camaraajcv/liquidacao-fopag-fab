@@ -703,12 +703,13 @@ with tab_gerar:
                 {
                     "numSeqItem": o["numSeqItem"],
                     "codSit": o["codSit"],
-                    "tpNormalEstorno": o.get("tpNormalEstorno",""),
-                    "numClassA": o.get("numClassA",""),
-                    "numClassB": o.get("numClassB",""),
-                    "numClassD": o.get("numClassD",""),
-                    "vlr": o["vlr"]
-                } for o in outros_items
+                    "tpNormalEstorno": o.get("tpNormalEstorno", ""),
+                    "numClassA": o.get("numClassA", ""),
+                    "numClassB": o.get("numClassB", ""),
+                    # REMOVA numClassD se você não usa mais
+                    "vlr": o["vlr"],
+                }
+                for o in outros_items
             ],
             "despesa_anular_groups": despesa_anular_groups,
             "centroCusto_cfg": {
@@ -724,17 +725,17 @@ with tab_gerar:
             "rel_despesa_anular_items": rel_despesa_anular_items,
             "pgto_items": pgto_items,
         }
-        if not block_xml:
-            xml_bytes = build_xml(payload)
 
-            st.download_button(
-                "⬇️ Baixar XML (DH001)",
-                data=xml_bytes,
-                file_name="DH001_FOPAG.xml",
-                mime="application/xml",
-                key="download_xml_btn"
-            )
-        else:
-            st.info("Corrija os campos obrigatórios acima para habilitar a geração do XML.")
+        xml_bytes = build_xml(payload)
 
-    st.caption("Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador.")
+        st.download_button(
+            "⬇️ Baixar XML (DH001)",
+            data=xml_bytes,
+            file_name="DH001_FOPAG.xml",
+            mime="application/xml",
+            key="download_xml_btn",
+        )
+
+    st.caption(
+        "Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador."
+    )
