@@ -600,9 +600,7 @@ with tab_gerar:
     # =========
     st.subheader("Checagens")
 
-    if block_xml:
-        st.error("⚠️ Existem linha(s) de PCO com codSit DFL038 sem a conta de Benefícios Previdenciários e Assistenciais (numClassB, ex.: 211310100). Corrija a colagem do PCO (use 6 colunas).")
-
+    
     st.write(f"Total POS (PCO): **{fmt_money_dot(total_pos)}**")
     st.write(f"Total NEG (DespesaAnular): **{fmt_money_dot(total_neg)}**")
     st.write(f"Valor líquido (Dados Básicos): **{dadosBasicosVlr}**")
