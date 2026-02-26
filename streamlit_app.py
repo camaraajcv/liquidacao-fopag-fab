@@ -154,8 +154,6 @@ def build_xml(payload: dict) -> bytes:
             add_text(it, "numClassA", item["numClassA"])
             if item.get("numClassB"):
                 add_text(it, "numClassB", item["numClassB"])
-            if item.get("numClassB"):
-                add_text(it, "numClassB", item["numClassB"])
 
     # =========================
     # OUTROS LANCAMENTOS (nome correto: outrosLanc)
@@ -171,11 +169,20 @@ def build_xml(payload: dict) -> bytes:
         add_text(ol, "vlr", o["vlr"])
 
         # Classificações (quando permitidas pela situação)
-        # Observação prática: para PRV001/PRV002/PRV003 o SIAFI rejeita Classificação D (ER0503)
         if o.get("numClassA"):
             add_text(ol, "numClassA", o["numClassA"])  # classe 3
-        if o.get("numClassD") and o.get("codSit") not in {"PRV001", "PRV002", "PRV003"}:
-            add_text(ol, "numClassD", o["numClassD"])  # classe 2
+
+        # Para PRV001/PRV002/PRV003 a "classe 2" deve ir em numClassB (e não em numClassD)
+        if o.get("codSit") in {"PRV001", "PRV002", "PRV003"}:
+            if o.get("numClassB"):
+                add_text(ol, "numClassB", o["numClassB"])
+        else:
+            if o.get("numClassD"):
+                add_text(ol, "numClassD", o["numClassD"])  # classe 2
+
+        # Normal/Estorno (N/E)
+        if o.get("tpNormalEstorno"):
+            add_text(ol, "tpNormalEstorno", o["tpNormalEstorno"])
 
     # =========================
     # DESPESA ANULAR (automático a partir de negativos no PCO)
@@ -194,8 +201,6 @@ def build_xml(payload: dict) -> bytes:
             add_text(di, "codSubItemEmpe", item["codSubItemEmpe"])
             add_text(di, "vlr", item["vlr"])           # já vem positivo
             add_text(di, "numClassA", item["numClassA"])
-            if item.get("numClassB"):
-                add_text(di, "numClassB", item["numClassB"])
             if item.get("numClassB"):
                 add_text(di, "numClassB", item["numClassB"])
 
@@ -445,18 +450,6 @@ with tab_gerar:
     liquido = total_pos - total_neg
 
     # =========
-    # Regras DH001 (PCO) — DFL038 exige conta adicional (Benefícios Previdenciários e Assistenciais)
-    # =========
-    missing_benef = []
-    for it in (pco_lines + neg_lines):
-        if (it.get("codSit","").strip().upper() == "DFL038") and (not it.get("numClassB")):
-            missing_benef.append(it.get("raw",""))
-    block_xml = False
-    if missing_benef:
-        block_xml = True
-
-
-    # =========
     # Parse Outros
     # =========
     outros_rows = parse_paste_table(outros_text, expected_cols=6) if (outros_text or "").strip() else []
@@ -474,7 +467,8 @@ with tab_gerar:
             "codSit": sit.strip().upper(),
             "tpNormalEstorno": (ne or "").strip().upper(),
             "numClassA": only_digits(class3),  # classe 3
-            "numClassD": only_digits(class2),  # classe 2
+            "numClassB": only_digits(class2) if sit.strip().upper() in ("PRV001","PRV002","PRV003") else "",  # classe 2 -> B p/ PRV
+            "numClassD": only_digits(class2) if sit.strip().upper() not in ("PRV001","PRV002","PRV003") else "",  # classe 2 -> D p/ demais
             "codNatDespDet": only_digits(ndd), # NDD p/ centro de custo
             "vlr": fmt_money_dot(v),
             "vlr_float": v,
@@ -709,8 +703,10 @@ with tab_gerar:
                 {
                     "numSeqItem": o["numSeqItem"],
                     "codSit": o["codSit"],
-                    "numClassA": o["numClassA"],
-                    "numClassD": o["numClassD"],
+                    "tpNormalEstorno": o.get("tpNormalEstorno",""),
+                    "numClassA": o.get("numClassA",""),
+                    "numClassB": o.get("numClassB",""),
+                    "numClassD": o.get("numClassD",""),
                     "vlr": o["vlr"]
                 } for o in outros_items
             ],
