@@ -165,10 +165,12 @@ def build_xml(payload: dict) -> bytes:
         add_text(ol, "numSeqItem", o["numSeqItem"])
         add_text(ol, "codSit", o["codSit"])
         add_text(ol, "vlr", o["vlr"])
-        # classificações (se houver)
+
+        # Classificações (quando permitidas pela situação)
+        # Observação prática: para PRV001/PRV002/PRV003 o SIAFI rejeita Classificação D (ER0503)
         if o.get("numClassA"):
             add_text(ol, "numClassA", o["numClassA"])  # classe 3
-        if o.get("numClassD"):
+        if o.get("numClassD") and o.get("codSit") not in {"PRV001", "PRV002", "PRV003"}:
             add_text(ol, "numClassD", o["numClassD"])  # classe 2
 
     # =========================
@@ -325,8 +327,8 @@ with tab_pco:
 # -------------------------
 with tab_outros:
     prefix = "outros"
-    st.markdown("Cole linhas no formato (5 colunas): **codSit | classe3 | classe2 | NDD | valor**")
-    st.caption("Ex.: PRV001    311110101    211110101    31901137    223,89")
+    st.markdown("Cole linhas no formato (6 colunas): **codSit | classe3 | classe2 | NDD | N/E | valor**")
+    st.caption("Ex.: PRV001    311110101    211110101    31901137    N    223,89")
     st.caption("Situações comuns: PRV001, PRV002, PRV003, LPA385, LPA386")
     outros_text = ta("Outros Lançamentos (colar) — opcional", "", prefix, height=220)
 
@@ -416,19 +418,20 @@ with tab_gerar:
     # =========
     # Parse Outros
     # =========
-    outros_rows = parse_paste_table(outros_text, expected_cols=5) if (outros_text or "").strip() else []
+    outros_rows = parse_paste_table(outros_text, expected_cols=6) if (outros_text or "").strip() else []
     invalid_outros = [r for r in outros_rows if r[0] == "__INVALID__"]
     ok_outros = [r for r in outros_rows if r[0] == "__OK__"]
 
     outros_items = []
     total_outros = 0.0
     for idx, (_, parts, raw) in enumerate(ok_outros, start=1):
-        sit, class3, class2, ndd, val = parts
+        sit, class3, class2, ndd, ne, val = parts
         v = parse_money_br(val)
         total_outros += v
         outros_items.append({
             "numSeqItem": str(idx),
             "codSit": sit.strip().upper(),
+            "tpNormalEstorno": (ne or "").strip().upper(),
             "numClassA": only_digits(class3),  # classe 3
             "numClassD": only_digits(class2),  # classe 2
             "codNatDespDet": only_digits(ndd), # NDD p/ centro de custo
@@ -437,6 +440,8 @@ with tab_gerar:
             "raw": raw
         })
 
+    # valida N/E (tpNormalEstorno)
+    invalid_ne = [o for o in outros_items if o.get("tpNormalEstorno") and o["tpNormalEstorno"] not in ("N","E")]
     # =========
     # Parse Pagamentos
     # =========
@@ -572,83 +577,119 @@ with tab_gerar:
         st.warning(f"PCO: {len(invalid_pco)} linha(s) com colunas insuficientes (foram ignoradas).")
     if invalid_outros:
         st.warning(f"OutrosLanc: {len(invalid_outros)} linha(s) inválida(s) (foram ignoradas).")
+    if invalid_ne:
+        st.error("OutrosLanc: há linha(s) com N/E inválido. Use apenas N ou E na 5ª coluna.")
     if invalid_pgto:
         st.warning(f"Pagamentos: {len(invalid_pgto)} linha(s) inválida(s) (foram ignoradas).")
+
+    # =========
+    # Regras específicas para FL (FOPAG) com Outros Lançamentos
+    # =========
+    bloqueia_download = False
+    if (codTipoDH or "").strip().upper() == "FL":
+        outros_sits = {o["codSit"] for o in outros_items}
+
+        # Em FL, o SIAFI exige os 3 grupos de provisão abaixo (ER0007 quando falta)
+        req_basicos = {"PRV001", "PRV002", "PRV003"}
+        faltando_basicos = sorted(req_basicos - outros_sits)
+
+        # Benefícios Previdenciários e Assistenciais (o SIAFI exige pelo menos uma linha específica)
+        # Na prática costuma ser LPA385/LPA386 (conforme parametrização da UG).
+        req_benef = {"LPA385", "LPA386"}
+        tem_benef = len(outros_sits & req_benef) > 0
+
+        if faltando_basicos:
+            st.error(
+                "⚠️ FL: faltam Outros Lançamentos obrigatórios para as situações: "
+                + ", ".join(faltando_basicos)
+                + " (isso gera ER0007: Normal/Estorno, Férias a Pagar, 13 Salário a Pagar)."
+            )
+            bloqueia_download = True
+
+        if not tem_benef:
+            st.error(
+                "⚠️ FL: falta Outros Lançamentos de Benefícios Previdenciários e Assistenciais "
+                "(normalmente LPA385 e/ou LPA386). Isso gera ER0007."
+            )
+            bloqueia_download = True
 
     # Regra de consistência principal (SIAFI): soma pagamentos deve bater com o líquido
     if abs(total_pgto - liquido) > 0.005:
         st.error("⚠️ Soma de pagamentos NÃO bate com o valor líquido (dadosBasicos).")
+        bloqueia_download = True
     else:
         st.success("✅ Soma de pagamentos bate com o valor líquido (dadosBasicos).")
 
     # =========
     # Build payload e gerar XML
     # =========
-    payload = {
-        "header": {
-            "codigoLayout": codigoLayout.strip(),
-            "dataGeracao": dataGeracao.strip(),
-            "sequencialGeracao": str(int(sequencialGeracao.strip() or "1")),  # remove zero à esquerda
-            "anoReferencia": anoReferenciaHeader.strip(),
-            "ugResponsavel": ugResponsavel.strip(),
-            "cpfResponsavel": only_digits(cpfResponsavel),
-        },
-        "topo": {
-            "codUgEmit": codUgEmit.strip(),
-            "anoDH": anoDH.strip(),
-            "codTipoDH": codTipoDH.strip(),
-        },
-        "dadosBasicos": {
-            "dtEmis": dtEmis.strip(),
-            "dtVenc": dtVenc.strip(),
-            "codUgPgto": codUgPgto.strip(),
-            "vlr": dadosBasicosVlr,
-            "txtObser": txtObser.strip(),
-            "txtProcesso": txtProcesso.strip(),
-            "dtAteste": dtAteste.strip(),
-            "codCredorDevedor": codCredorDevedor.strip(),
-            "dtPgtoReceb": dtPgtoReceb.strip(),
-        },
-        "docOrigem": {
-            "codIdentEmit": codIdentEmit.strip(),
-            "dtEmis": dtEmis.strip(),
-            "numDocOrigem": numDocOrigem.strip(),
-            "vlr": docOrigemVlr,
-        },
-        "pco_groups": pco_groups,
-        # outrosLanc é opcional: se vazio, lista vazia => não gera tag
-        "outros_items": [
-            {
-                "numSeqItem": o["numSeqItem"],
-                "codSit": o["codSit"],
-                "numClassA": o["numClassA"],
-                "numClassD": o["numClassD"],
-                "vlr": o["vlr"]
-            } for o in outros_items
-        ],
-        "despesa_anular_groups": despesa_anular_groups,
-        "centroCusto_cfg": {
-            "numSeqItem": "1",
-            "codCentroCusto": codCentroCusto.strip(),
-            "mesReferencia": mesReferencia.strip().zfill(2),
-            "anoReferencia": anoReferenciaCC.strip(),
-            "codUgBenef": codUgBenef.strip(),
-            "codSIORG": codSIORG.strip(),
-        },
-        "rel_pco_items": rel_pco_items,
-        "rel_outros_items": rel_outros_items,
-        "rel_despesa_anular_items": rel_despesa_anular_items,
-        "pgto_items": pgto_items,
-    }
+    if bloqueia_download:
+        st.info("Corrija os erros acima para liberar a geração do XML.")
+    else:
+        payload = {
+            "header": {
+                "codigoLayout": codigoLayout.strip(),
+                "dataGeracao": dataGeracao.strip(),
+                "sequencialGeracao": str(int(sequencialGeracao.strip() or "1")),  # remove zero à esquerda
+                "anoReferencia": anoReferenciaHeader.strip(),
+                "ugResponsavel": ugResponsavel.strip(),
+                "cpfResponsavel": only_digits(cpfResponsavel),
+            },
+            "topo": {
+                "codUgEmit": codUgEmit.strip(),
+                "anoDH": anoDH.strip(),
+                "codTipoDH": codTipoDH.strip(),
+            },
+            "dadosBasicos": {
+                "dtEmis": dtEmis.strip(),
+                "dtVenc": dtVenc.strip(),
+                "codUgPgto": codUgPgto.strip(),
+                "vlr": dadosBasicosVlr,
+                "txtObser": txtObser.strip(),
+                "txtProcesso": txtProcesso.strip(),
+                "dtAteste": dtAteste.strip(),
+                "codCredorDevedor": codCredorDevedor.strip(),
+                "dtPgtoReceb": dtPgtoReceb.strip(),
+            },
+            "docOrigem": {
+                "codIdentEmit": codIdentEmit.strip(),
+                "dtEmis": dtEmis.strip(),
+                "numDocOrigem": numDocOrigem.strip(),
+                "vlr": docOrigemVlr,
+            },
+            "pco_groups": pco_groups,
+            # outrosLanc é opcional: se vazio, lista vazia => não gera tag
+            "outros_items": [
+                {
+                    "numSeqItem": o["numSeqItem"],
+                    "codSit": o["codSit"],
+                    "numClassA": o["numClassA"],
+                    "numClassD": o["numClassD"],
+                    "vlr": o["vlr"]
+                } for o in outros_items
+            ],
+            "despesa_anular_groups": despesa_anular_groups,
+            "centroCusto_cfg": {
+                "numSeqItem": "1",
+                "codCentroCusto": codCentroCusto.strip(),
+                "mesReferencia": mesReferencia.strip().zfill(2),
+                "anoReferencia": anoReferenciaCC.strip(),
+                "codUgBenef": codUgBenef.strip(),
+                "codSIORG": codSIORG.strip(),
+            },
+            "rel_pco_items": rel_pco_items,
+            "rel_outros_items": rel_outros_items,
+            "rel_despesa_anular_items": rel_despesa_anular_items,
+            "pgto_items": pgto_items,
+        }
 
-    xml_bytes = build_xml(payload)
+        xml_bytes = build_xml(payload)
 
-    st.download_button(
-        "⬇️ Baixar XML (DH001)",
-        data=xml_bytes,
-        file_name="DH001_FOPAG.xml",
-        mime="application/xml",
-        key="download_xml_btn"
-    )
-
+        st.download_button(
+            "⬇️ Baixar XML (DH001)",
+            data=xml_bytes,
+            file_name="DH001_FOPAG.xml",
+            mime="application/xml",
+            key="download_xml_btn"
+        )
     st.caption("Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador.")
