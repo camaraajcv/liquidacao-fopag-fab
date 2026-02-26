@@ -61,7 +61,7 @@ def parse_paste_table(text: str, expected_cols: int):
             rows.append(("__INVALID__", parts, raw))
             continue
 
-        rows.append(("__OK__", parts[:expected_cols], raw))
+        rows.append(("__OK__", parts, raw))
     return rows
 
 # =========================
@@ -152,6 +152,10 @@ def build_xml(payload: dict) -> bytes:
             add_text(it, "codSubItemEmpe", item["codSubItemEmpe"])
             add_text(it, "vlr", item["vlr"])
             add_text(it, "numClassA", item["numClassA"])
+            if item.get("numClassB"):
+                add_text(it, "numClassB", item["numClassB"])
+            if item.get("numClassB"):
+                add_text(it, "numClassB", item["numClassB"])
 
     # =========================
     # OUTROS LANCAMENTOS (nome correto: outrosLanc)
@@ -190,6 +194,10 @@ def build_xml(payload: dict) -> bytes:
             add_text(di, "codSubItemEmpe", item["codSubItemEmpe"])
             add_text(di, "vlr", item["vlr"])           # já vem positivo
             add_text(di, "numClassA", item["numClassA"])
+            if item.get("numClassB"):
+                add_text(di, "numClassB", item["numClassB"])
+            if item.get("numClassB"):
+                add_text(di, "numClassB", item["numClassB"])
 
     # =========================
     # CENTRO DE CUSTO
@@ -317,8 +325,11 @@ with tab_basicos:
 # -------------------------
 with tab_pco:
     prefix = "pco"
-    st.markdown("Cole linhas no formato (5 colunas): **numEmpe | subitem(2) | codSit | numClassA | valor**")
-    st.caption("Ex.: 2026NE000055    46    DFL033    113110105    45905,55")
+    st.markdown("""Cole linhas no formato (5 a 6 colunas): **numEmpe | subitem(2) | codSit | numClassA | (numClassB opcional) | valor**
+
+• Para **DFL038**, informe também a conta de **Benefícios Previdenciários e Assistenciais** (ex.: `211310100`) como **numClassB**.""")
+    st.caption("""Ex.: 2026NE000055    46    DFL033    113110105    45905,55
+Ex.(DFL038): 2026NE000055    46    DFL038    113110105    211310100    45905,55""")
     pco_text = ta("PCO (colar)", "", prefix, height=220)
     codUgEmpe = ti("codUgEmpe (para PCO/DespesaAnular)", "120052", prefix)
 
@@ -396,13 +407,31 @@ with tab_gerar:
     pco_lines = []
     neg_lines = []
     for _, parts, raw in ok_pco:
-        numEmpe, subitem, sit, classA, val = parts
+        # Aceita 5 colunas (sem numClassB) ou 6 colunas (com numClassB)
+        if len(parts) >= 6:
+            numEmpe, subitem, sit, classA, classB, val = parts[:6]
+        else:
+            numEmpe, subitem, sit, classA, val = parts[:5]
+            classB = ""
+
+        sit_norm = (sit or "").strip().upper()
+        classB_digits = only_digits((classB or "").strip())
+
+        # Regra SIAFI (FL): quando usar DFL038, é obrigatória a Classificação B 211310100
+        if sit_norm == "DFL038":
+            if classB_digits and classB_digits != "211310100":
+                # mantém o arquivo compatível com a regra: força a conta correta
+                classB_digits = "211310100"
+            elif not classB_digits:
+                classB_digits = "211310100"
+
         v = parse_money_br(val)
         item = {
             "numEmpe": numEmpe.strip(),
             "codSubItemEmpe": subitem.strip().zfill(2),
-            "codSit": sit.strip(),
+            "codSit": sit_norm,
             "numClassA": only_digits(classA.strip()),
+            "numClassB": classB_digits,
             "vlr_float": v,
             "raw": raw
         }
@@ -414,6 +443,18 @@ with tab_gerar:
     total_pos = sum(x["vlr_float"] for x in pco_lines)
     total_neg = sum(abs(x["vlr_float"]) for x in neg_lines)
     liquido = total_pos - total_neg
+
+    # =========
+    # Regras DH001 (PCO) — DFL038 exige conta adicional (Benefícios Previdenciários e Assistenciais)
+    # =========
+    missing_benef = []
+    for it in (pco_lines + neg_lines):
+        if (it.get("codSit","").strip().upper() == "DFL038") and (not it.get("numClassB")):
+            missing_benef.append(it.get("raw",""))
+    block_xml = False
+    if missing_benef:
+        block_xml = True
+
 
     # =========
     # Parse Outros
@@ -491,6 +532,7 @@ with tab_gerar:
                 "codSubItemEmpe": it["codSubItemEmpe"],
                 "vlr": fmt_money_dot(it["vlr_float"]),
                 "numClassA": it["numClassA"],
+                "numClassB": it.get("numClassB",""),
             })
             rel_pco_items.append({
                 "numSeqPai": group_seq,
@@ -525,7 +567,8 @@ with tab_gerar:
                 "numEmpe": it["numEmpe"],
                 "codSubItemEmpe": it["codSubItemEmpe"],
                 "vlr": fmt_money_dot(v_abs),     # SEM sinal
-                "numClassA": it["numClassA"]
+                "numClassA": it["numClassA"],
+                "numClassB": it.get("numClassB","")
             })
             rel_despesa_anular_items.append({
                 "numSeqPai": group_seq,
@@ -562,6 +605,9 @@ with tab_gerar:
     # Checagens
     # =========
     st.subheader("Checagens")
+
+    if block_xml:
+        st.error("⚠️ Existem linha(s) de PCO com codSit DFL038 sem a conta de Benefícios Previdenciários e Assistenciais (numClassB, ex.: 211310100). Corrija a colagem do PCO (use 6 colunas).")
 
     st.write(f"Total POS (PCO): **{fmt_money_dot(total_pos)}**")
     st.write(f"Total NEG (DespesaAnular): **{fmt_money_dot(total_neg)}**")
@@ -682,14 +728,17 @@ with tab_gerar:
             "rel_despesa_anular_items": rel_despesa_anular_items,
             "pgto_items": pgto_items,
         }
+        if not block_xml:
+            xml_bytes = build_xml(payload)
 
-        xml_bytes = build_xml(payload)
+            st.download_button(
+                "⬇️ Baixar XML (DH001)",
+                data=xml_bytes,
+                file_name="DH001_FOPAG.xml",
+                mime="application/xml",
+                key="download_xml_btn"
+            )
+        else:
+            st.info("Corrija os campos obrigatórios acima para habilitar a geração do XML.")
 
-        st.download_button(
-            "⬇️ Baixar XML (DH001)",
-            data=xml_bytes,
-            file_name="DH001_FOPAG.xml",
-            mime="application/xml",
-            key="download_xml_btn"
-        )
     st.caption("Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador.")
