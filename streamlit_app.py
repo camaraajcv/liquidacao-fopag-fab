@@ -624,15 +624,14 @@ with tab_gerar:
     # Regras específicas para FL (FOPAG) com Outros Lançamentos
     # =========
     bloqueia_download = False
-    if (codTipoDH or "").strip().upper() == "FL":
+    if (codTipoDH or "").strip().upper() == "FL" and len(outros_items) > 0:
         outros_sits = {o["codSit"] for o in outros_items}
 
-        # Em FL, o SIAFI exige os 3 grupos de provisão abaixo (ER0007 quando falta)
+        # Em FL, se houver Outros Lançamentos preenchidos, o SIAFI exige os 3 grupos de provisão abaixo
         req_basicos = {"PRV001", "PRV002", "PRV003"}
         faltando_basicos = sorted(req_basicos - outros_sits)
 
-        # Benefícios Previdenciários e Assistenciais (o SIAFI exige pelo menos uma linha específica)
-        # Na prática costuma ser LPA385/LPA386 (conforme parametrização da UG).
+        # Benefícios Previdenciários e Assistenciais
         req_benef = {"LPA385", "LPA386"}
         tem_benef = len(outros_sits & req_benef) > 0
 
@@ -661,6 +660,8 @@ with tab_gerar:
     # =========
     # Build payload e gerar XML
     # =========
+    if len(outros_items) == 0:
+        st.info("Outros Lançamentos não informado: a geração seguirá sem a tag <outrosLanc> e sem validações dessa aba.")
     if bloqueia_download:
         st.info("Corrija os erros acima para liberar a geração do XML.")
     else:
