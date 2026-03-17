@@ -69,7 +69,7 @@ def parse_paste_table(text: str, expected_cols: int):
 # =========================
 
 
-MAX_LINHAS_FL = 100
+MAX_LINHAS_FL = 90
 
 def split_into_chunks(seq, max_size):
     return [seq[i:i + max_size] for i in range(0, len(seq), max_size)]
@@ -768,13 +768,17 @@ with tab_gerar:
     st.write(f"Soma CentroCusto (relPco + relOutros - relDespesaAnular): **{fmt_money_dot(soma_cc)}**")
 
     if invalid_pco:
-        st.warning(f"PCO: {len(invalid_pco)} linha(s) com colunas insuficientes (foram ignoradas).")
+        st.error(f"PCO: {len(invalid_pco)} linha(s) com colunas insuficientes. Corrija antes de gerar o XML.")
+        bloqueia_download = True
     if invalid_outros:
-        st.warning(f"OutrosLanc: {len(invalid_outros)} linha(s) inválida(s) (foram ignoradas).")
+        st.error(f"OutrosLanc: {len(invalid_outros)} linha(s) inválida(s). Corrija antes de gerar o XML.")
+        bloqueia_download = True
     if invalid_ne:
         st.error("OutrosLanc: há linha(s) com N/E inválido. Use apenas N ou E na 5ª coluna.")
+        bloqueia_download = True
     if invalid_pgto:
-        st.warning(f"Pagamentos: {len(invalid_pgto)} linha(s) inválida(s) (foram ignoradas).")
+        st.error(f"Pagamentos: {len(invalid_pgto)} linha(s) inválida(s). Corrija antes de gerar o XML.")
+        bloqueia_download = True
 
     # =========
     # Regras específicas para FL (FOPAG) com Outros Lançamentos
@@ -819,7 +823,9 @@ with tab_gerar:
     flat_items = flatten_contabil_items(pco_lines, neg_lines, outros_items)
     chunks = split_into_chunks(flat_items, MAX_LINHAS_FL)
 
-    st.write(f"Quantidade total de linhas de contabilização: **{len(flat_items)}**")
+    st.write(f"Linhas válidas lidas no PCO: **{len(pco_lines) + len(neg_lines)}**")
+    st.write(f"Linhas válidas lidas em Outros Lanc: **{len(outros_items)}**")
+    st.write(f"Quantidade total de linhas de contabilização consideradas para o fracionamento: **{len(flat_items)}**")
     st.write(f"Quantidade de FLs geradas: **{len(chunks)}**")
     if len(chunks) > 1:
         st.info(f"O arquivo será gerado com {len(chunks)} detalhes (FLs), cada um com no máximo {MAX_LINHAS_FL} linhas.")
