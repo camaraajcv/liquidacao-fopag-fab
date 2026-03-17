@@ -878,6 +878,4 @@ with tab_gerar:
             key="download_xml_btn",
         )
 
-    st.caption(
-        "Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador."
-    )
+    
