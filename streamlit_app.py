@@ -293,7 +293,9 @@ def add_text(parent, tag, text):
 
 def build_xml(payload: dict) -> bytes:
     """
-    Suporta payload simples (1 detalhe) ou com detalhes_lista (múltiplos detalhes).
+    Suporta:
+      - payload simples (1 detalhe), contendo topo/dadosBasicos/etc. na raiz
+      - payload com detalhes_lista (múltiplos detalhes), onde cada item já traz topo/dadosBasicos/etc.
     """
     root = ET.Element(sb("arquivo"))
 
@@ -306,7 +308,23 @@ def build_xml(payload: dict) -> bytes:
     add_text(header, sb("cpfResponsavel"), payload["header"]["cpfResponsavel"])
 
     detalhes = ET.SubElement(root, sb("detalhes"))
-    detalhes_lista = payload.get("detalhes_lista") or [payload]
+
+    if payload.get("detalhes_lista"):
+        detalhes_lista = payload["detalhes_lista"]
+    else:
+        detalhes_lista = [{
+            "topo": payload["topo"],
+            "dadosBasicos": payload["dadosBasicos"],
+            "docOrigem": payload["docOrigem"],
+            "pco_groups": payload.get("pco_groups", []),
+            "outros_items": payload.get("outros_items", []),
+            "despesa_anular_groups": payload.get("despesa_anular_groups", []),
+            "centroCusto_cfg": payload["centroCusto_cfg"],
+            "rel_pco_items": payload.get("rel_pco_items", []),
+            "rel_outros_items": payload.get("rel_outros_items", []),
+            "rel_despesa_anular_items": payload.get("rel_despesa_anular_items", []),
+            "pgto_items": payload.get("pgto_items", []),
+        }]
 
     for detalhe_payload in detalhes_lista:
         detalhe = ET.SubElement(detalhes, sb("detalhe"))
