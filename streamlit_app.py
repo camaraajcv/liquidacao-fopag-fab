@@ -72,9 +72,12 @@ MAX_PCO_ROWS_PER_DETALHE = 10
 
 def split_original_pco_rows_into_chunks(pco_rows_pos, pco_rows_neg, chunk_size=MAX_PCO_ROWS_PER_DETALHE):
     """
-    Divide os detalhes considerando as linhas ORIGINAIS do PCO colado.
-    Positivos e negativos contam igualmente como 1 linha.
-    Mantém a ordem original de leitura.
+    Divide os detalhes considerando as linhas ORIGINAIS do PCO colado,
+    mas mantendo AFL/DFL correspondentes no MESMO detalhe.
+
+    Regra de vínculo:
+      - mesmo numEmpe + codSubItemEmpe
+    Se existir positivo e negativo para a mesma chave, eles viram uma unidade indivisível.
     """
     ordered = []
     for it in pco_rows_pos:
@@ -82,17 +85,41 @@ def split_original_pco_rows_into_chunks(pco_rows_pos, pco_rows_neg, chunk_size=M
     for it in pco_rows_neg:
         ordered.append({"tipo": "DA", "data": it, "ord": it.get("ord", 0)})
     ordered.sort(key=lambda x: x["ord"])
+
+    buckets = {}
+    first_ord = {}
+    for entry in ordered:
+        item = entry["data"]
+        key = (item.get("numEmpe", ""), item.get("codSubItemEmpe", ""))
+        buckets.setdefault(key, []).append(entry)
+        first_ord.setdefault(key, entry["ord"])
+
+    units = [buckets[k] for k in sorted(buckets.keys(), key=lambda k: first_ord[k])]
+
     chunks = []
-    for i in range(0, len(ordered), chunk_size):
-        chunks.append(ordered[i:i+chunk_size])
+    current = []
+    current_size = 0
+    for unit in units:
+        unit_size = len(unit)
+        if unit_size > chunk_size:
+            if current:
+                chunks.append(current)
+                current = []
+                current_size = 0
+            chunks.append(unit)
+            continue
+        if current_size + unit_size > chunk_size:
+            chunks.append(current)
+            current = list(unit)
+            current_size = unit_size
+        else:
+            current.extend(unit)
+            current_size += unit_size
+    if current:
+        chunks.append(current)
     return chunks
 
 def rebuild_detalhe_from_pco_chunk(chunk, codUgEmpe, outros_items_first_chunk=None):
-    """
-    Reconstroi pco/despesaAnular/centroCusto para um detalhe a partir de um bloco
-    de até N linhas originais do PCO.
-    Outros lançamentos podem ser incluídos apenas no primeiro detalhe.
-    """
     pco_by_sit = {}
     neg_by_sit = {}
     total_pos = 0.0
@@ -198,7 +225,6 @@ def rebuild_detalhe_from_pco_chunk(chunk, codUgEmpe, outros_items_first_chunk=No
     }
 
 def ratear_pagamentos(pgto_items_orig, valores_liquidos_chunks):
-    """Rateia os pagamentos originais entre os detalhes conforme o líquido de cada um."""
     fontes = []
     for p in pgto_items_orig:
         fontes.append({
@@ -239,12 +265,11 @@ def ratear_pagamentos(pgto_items_orig, valores_liquidos_chunks):
                     "contaPgto": f["contaPgto"],
                 })
                 f["saldo"] -= usar
-                restante = round(restante - usar, 2)
-        if abs(restante) > 0.005:
-            raise ValueError(f"Não foi possível ratear pagamentos. Restante: {fmt_money_dot(restante)}")
+                restante -= usar
+        if round(restante, 2) != 0:
+            raise ValueError(f"Não foi possível ratear pagamentos. Faltou {fmt_money_dot(restante)} para um detalhe.")
         chunks_pgto.append(chunk_pg)
     return chunks_pgto
-
 # =========================
 # XML builders
 # =========================
@@ -268,9 +293,7 @@ def add_text(parent, tag, text):
 
 def build_xml(payload: dict) -> bytes:
     """
-    Suporta 1 ou vários <sb:detalhe> no mesmo arquivo.
-    Se vier payload["detalhes_lista"], usa essa lista.
-    Caso contrário, mantém compatibilidade com o payload antigo.
+    Suporta payload simples (1 detalhe) ou com detalhes_lista (múltiplos detalhes).
     """
     root = ET.Element(sb("arquivo"))
 
@@ -283,11 +306,7 @@ def build_xml(payload: dict) -> bytes:
     add_text(header, sb("cpfResponsavel"), payload["header"]["cpfResponsavel"])
 
     detalhes = ET.SubElement(root, sb("detalhes"))
-
-    if "detalhes_lista" in payload:
-        detalhes_lista = payload["detalhes_lista"]
-    else:
-        detalhes_lista = [payload]
+    detalhes_lista = payload.get("detalhes_lista") or [payload]
 
     for detalhe_payload in detalhes_lista:
         detalhe = ET.SubElement(detalhes, sb("detalhe"))
@@ -398,25 +417,17 @@ def build_xml(payload: dict) -> bytes:
             add_text(pob, "codTipoOB", p["codTipoOB"])
             add_text(pob, "codCredorDevedor", p["codCredorDevedor"])
             add_text(pob, "txtCit", p["txtCit"])
-
             favo = ET.SubElement(pob, "numDomiBancFavo")
             add_text(favo, "banco", p["bancoFavo"])
             add_text(favo, "agencia", p["agenciaFavo"])
             add_text(favo, "conta", p["contaFavo"])
-
             pg = ET.SubElement(pob, "numDomiBancPgto")
             add_text(pg, "banco", p["bancoPgto"])
             add_text(pg, "conta", p["contaPgto"])
 
     tr = ET.SubElement(root, sb("trailler"))
     add_text(tr, sb("quantidadeDetalhe"), str(len(detalhes_lista)))
-
-    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-    return xml_bytes
-
-# =========================
-# Streamlit UI
-# =========================
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 # =========================
 # Streamlit UI
 # =========================
@@ -555,7 +566,7 @@ with tab_gerar:
 
     pco_lines = []
     neg_lines = []
-    for _, parts, raw in ok_pco:
+    for ord_idx, (_, parts, raw) in enumerate(ok_pco, start=1):
         # Aceita 5 colunas (sem numClassB) ou 6 colunas (com numClassB)
         if len(parts) >= 6:
             numEmpe, subitem, sit, classA, classB, val = parts[:6]
@@ -582,6 +593,7 @@ with tab_gerar:
             "numClassA": only_digits(classA.strip()),
             "numClassB": classB_digits,
             "vlr_float": v,
+            "ord": ord_idx,
             "raw": raw
         }
         if v < 0:
@@ -809,29 +821,19 @@ with tab_gerar:
     if bloqueia_download:
         st.info("Corrija os erros acima para liberar a geração do XML.")
     else:
-        # quebra em um detalhe a cada 10 linhas ORIGINAIS do PCO
         pco_chunks = split_original_pco_rows_into_chunks(pco_lines, neg_lines, MAX_PCO_ROWS_PER_DETALHE)
-        if not pco_chunks:
-            pco_chunks = [[]]
+        st.write(f"Quantidade de detalhes/FLs gerados: **{len(pco_chunks)}**")
 
-        detalhes_rebuilt = []
-        liquidos_chunks = []
-
+        detalhes_lista = []
+        valores_liquidos_chunks = []
         for idx, chunk in enumerate(pco_chunks, start=1):
-            outros_do_detalhe = outros_items if idx == 1 else []
-            rebuilt = rebuild_detalhe_from_pco_chunk(chunk, codUgEmpe.strip(), outros_do_detalhe)
-            detalhes_rebuilt.append(rebuilt)
-            liquidos_chunks.append(rebuilt["liquido"])
-
-        st.write(f"Detalhes (FLs) gerados: **{len(detalhes_rebuilt)}**")
-        st.write(f"Critério: **1 detalhe para cada {MAX_PCO_ROWS_PER_DETALHE} linhas do PCO original**")
-
-        pgto_chunks = ratear_pagamentos(pgto_items, liquidos_chunks)
-
-        detalhes_payload = []
-        for i, rebuilt in enumerate(detalhes_rebuilt):
-            liquido_det = rebuilt["liquido"]
-            detalhes_payload.append({
+            rebuilt = rebuild_detalhe_from_pco_chunk(
+                chunk,
+                codUgEmpe.strip(),
+                outros_items_first_chunk=outros_items if idx == 1 else []
+            )
+            valores_liquidos_chunks.append(rebuilt["liquido"])
+            detalhes_lista.append({
                 "topo": {
                     "codUgEmit": codUgEmit.strip(),
                     "anoDH": anoDH.strip(),
@@ -841,7 +843,7 @@ with tab_gerar:
                     "dtEmis": dtEmis.strip(),
                     "dtVenc": dtVenc.strip(),
                     "codUgPgto": codUgPgto.strip(),
-                    "vlr": fmt_money_dot(liquido_det),
+                    "vlr": fmt_money_dot(rebuilt["liquido"]),
                     "txtObser": txtObser.strip(),
                     "txtProcesso": txtProcesso.strip(),
                     "dtAteste": dtAteste.strip(),
@@ -852,7 +854,7 @@ with tab_gerar:
                     "codIdentEmit": codIdentEmit.strip(),
                     "dtEmis": dtEmis.strip(),
                     "numDocOrigem": numDocOrigem.strip(),
-                    "vlr": fmt_money_dot(liquido_det),
+                    "vlr": fmt_money_dot(rebuilt["liquido"]),
                 },
                 "pco_groups": rebuilt["pco_groups"],
                 "outros_items": rebuilt["outros_items"],
@@ -868,8 +870,12 @@ with tab_gerar:
                 "rel_pco_items": rebuilt["rel_pco_items"],
                 "rel_outros_items": rebuilt["rel_outros_items"],
                 "rel_despesa_anular_items": rebuilt["rel_despesa_anular_items"],
-                "pgto_items": pgto_chunks[i],
+                "pgto_items": [],
             })
+
+        pgto_chunks = ratear_pagamentos(pgto_items, valores_liquidos_chunks)
+        for i, pg_chunk in enumerate(pgto_chunks):
+            detalhes_lista[i]["pgto_items"] = pg_chunk
 
         payload = {
             "header": {
@@ -880,7 +886,7 @@ with tab_gerar:
                 "ugResponsavel": ugResponsavel.strip(),
                 "cpfResponsavel": only_digits(cpfResponsavel),
             },
-            "detalhes_lista": detalhes_payload,
+            "detalhes_lista": detalhes_lista,
         }
 
         xml_bytes = build_xml(payload)
@@ -892,7 +898,6 @@ with tab_gerar:
             mime="application/xml",
             key="download_xml_btn",
         )
-
     st.caption(
         "Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador."
     )
