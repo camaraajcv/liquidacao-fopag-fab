@@ -65,125 +65,6 @@ def parse_paste_table(text: str, expected_cols: int):
     return rows
 
 # =========================
-# Split em múltiplos detalhes (Opção B)
-# =========================
-MAX_PCO_LINHAS_POR_DETALHE = 10
-
-def split_list(seq, size):
-    return [seq[i:i+size] for i in range(0, len(seq), size)]
-
-def build_pco_row_units(pco_lines, neg_lines):
-    """Cria unidades por (numEmpe, codSubItemEmpe) mantendo AFL/DFL juntas."""
-    pos_map = {}
-    for it in pco_lines:
-        key = (it['numEmpe'], it['codSubItemEmpe'])
-        pos_map.setdefault(key, []).append(it)
-    neg_map = {}
-    for it in neg_lines:
-        key = (it['numEmpe'], it['codSubItemEmpe'])
-        neg_map.setdefault(key, []).append(it)
-    all_keys, seen = [], set()
-    for it in pco_lines + neg_lines:
-        key = (it['numEmpe'], it['codSubItemEmpe'])
-        if key not in seen:
-            seen.add(key)
-            all_keys.append(key)
-    return [{'key': key, 'pos': pos_map.get(key, []), 'neg': neg_map.get(key, []), 'count': len(pos_map.get(key, [])) + len(neg_map.get(key, []))} for key in all_keys]
-
-def chunk_units_by_pco_rows(units, max_rows=10):
-    chunks, current, current_count = [], [], 0
-    for u in units:
-        ucount = u['count'] or 1
-        if current and current_count + ucount > max_rows:
-            chunks.append(current)
-            current, current_count = [], 0
-        current.append(u)
-        current_count += ucount
-    if current:
-        chunks.append(current)
-    return chunks
-
-def rebuild_detail_from_units(units, codUgEmpe, include_outros=False, outros_items=None):
-    pos_lines, neg_lines = [], []
-    for u in units:
-        pos_lines.extend(u['pos'])
-        neg_lines.extend(u['neg'])
-
-    pco_by_sit = {}
-    for item in pos_lines:
-        pco_by_sit.setdefault(item['codSit'], []).append(item)
-    pco_groups, rel_pco_items, total_pos = [], [], 0.0
-    seq_pco = 0
-    for sit, items in pco_by_sit.items():
-        seq_pco += 1
-        group_seq = str(seq_pco)
-        group_items = []
-        for i, it in enumerate(items, start=1):
-            total_pos += it['vlr_float']
-            group_items.append({'numSeqItem': str(i), 'numEmpe': it['numEmpe'], 'codSubItemEmpe': it['codSubItemEmpe'], 'vlr': fmt_money_dot(it['vlr_float']), 'numClassA': it['numClassA'], 'numClassB': it.get('numClassB','')})
-            rel_pco_items.append({'numSeqPai': group_seq, 'numSeqItem': str(i), 'vlr': fmt_money_dot(it['vlr_float'])})
-        pco_groups.append({'numSeqItem': group_seq, 'codSit': sit, 'codUgEmpe': codUgEmpe, 'items': group_items})
-
-    neg_by_sit = {}
-    for item in neg_lines:
-        neg_by_sit.setdefault(item['codSit'], []).append(item)
-    despesa_anular_groups, rel_despesa_anular_items, total_neg = [], [], 0.0
-    seq_da = 0
-    for sit, items in neg_by_sit.items():
-        seq_da += 1
-        group_seq = str(seq_da)
-        group_items = []
-        for i, it in enumerate(items, start=1):
-            v_abs = abs(it['vlr_float'])
-            total_neg += v_abs
-            group_items.append({'numSeqItem': str(i), 'numEmpe': it['numEmpe'], 'codSubItemEmpe': it['codSubItemEmpe'], 'vlr': fmt_money_dot(v_abs), 'numClassA': it['numClassA'], 'numClassB': it.get('numClassB','')})
-            rel_despesa_anular_items.append({'numSeqPai': group_seq, 'numSeqItem': str(i), 'vlr': fmt_money_dot(v_abs)})
-        despesa_anular_groups.append({'numSeqItem': group_seq, 'codSit': sit, 'codUgEmpe': codUgEmpe, 'items': group_items})
-
-    use_outros = outros_items if include_outros and outros_items else []
-    rel_outros_items, total_outros = [], 0.0
-    for o in use_outros:
-        total_outros += o['vlr_float']
-        rel_outros_items.append({'numSeqItem': o['numSeqItem'], 'codNatDespDet': o['codNatDespDet'], 'vlr': o['vlr']})
-
-    liquido = total_pos - total_neg
-    return {
-        'pco_groups': pco_groups,
-        'despesa_anular_groups': despesa_anular_groups,
-        'rel_pco_items': rel_pco_items,
-        'rel_despesa_anular_items': rel_despesa_anular_items,
-        'outros_items': use_outros,
-        'rel_outros_items': rel_outros_items,
-        'total_pos': total_pos,
-        'total_neg': total_neg,
-        'total_outros': total_outros,
-        'liquido': liquido,
-    }
-
-def ratear_pagamentos(pgto_items_orig, valores_liquidos_chunks):
-    saldo_fontes = []
-    for p in pgto_items_orig:
-        saldo_fontes.append({'codCredorDevedor': p['codCredorDevedor'], 'txtObser': p['txtObser'], 'codTipoOB': p['codTipoOB'], 'txtCit': p['txtCit'], 'bancoFavo': p['bancoFavo'], 'agenciaFavo': p['agenciaFavo'], 'contaFavo': p['contaFavo'], 'bancoPgto': p['bancoPgto'], 'contaPgto': p['contaPgto'], 'saldo': float(p['vlr_float'])})
-    chunks_pgto = []
-    for valor_chunk in valores_liquidos_chunks:
-        restante = float(valor_chunk)
-        chunk_pgto = []
-        for fonte in saldo_fontes:
-            if restante <= 0:
-                break
-            if fonte['saldo'] <= 0:
-                continue
-            usar = min(fonte['saldo'], restante)
-            if usar > 0:
-                chunk_pgto.append({'codCredorDevedor': fonte['codCredorDevedor'], 'vlr': fmt_money_dot(usar), 'vlr_float': usar, 'txtObser': fonte['txtObser'], 'codTipoOB': fonte['codTipoOB'], 'txtCit': fonte['txtCit'], 'bancoFavo': fonte['bancoFavo'], 'agenciaFavo': fonte['agenciaFavo'], 'contaFavo': fonte['contaFavo'], 'bancoPgto': fonte['bancoPgto'], 'contaPgto': fonte['contaPgto']})
-                fonte['saldo'] -= usar
-                restante -= usar
-        if round(restante, 2) != 0:
-            raise ValueError(f"Não foi possível ratear pagamentos para um detalhe de valor {fmt_money_dot(valor_chunk)}. Faltou {fmt_money_dot(restante)}.")
-        chunks_pgto.append(chunk_pgto)
-    return chunks_pgto
-
-# =========================
 # XML builders
 # =========================
 
@@ -204,8 +85,192 @@ def add_text(parent, tag, text):
     el.text = str(text)
     return el
 
+
+MAX_LINHAS_FL = 100
+
+def split_into_chunks(seq, max_size):
+    return [seq[i:i + max_size] for i in range(0, len(seq), max_size)]
+
+def flatten_contabil_items(pco_lines, neg_lines, outros_items):
+    """
+    Conta apenas o que o SIAFI aparenta considerar para o limite do detalhe:
+    - pcoItem
+    - despesaAnularItem
+    - outrosLanc
+    """
+    flat = []
+    for it in pco_lines:
+        flat.append({"tipo": "PCO", "data": it})
+    for it in neg_lines:
+        flat.append({"tipo": "DA", "data": it})
+    for it in outros_items:
+        flat.append({"tipo": "OUTROS", "data": it})
+    return flat
+
+def rebuild_chunk_structures(chunk_items, codUgEmpe):
+    pco_by_sit = {}
+    neg_by_sit = {}
+    outros_items = []
+
+    for item in chunk_items:
+        if item["tipo"] == "PCO":
+            data = item["data"]
+            pco_by_sit.setdefault(data["codSit"], []).append(data)
+        elif item["tipo"] == "DA":
+            data = item["data"]
+            neg_by_sit.setdefault(data["codSit"], []).append(data)
+        elif item["tipo"] == "OUTROS":
+            outros_items.append(item["data"])
+
+    pco_groups = []
+    rel_pco_items = []
+    seq_pco = 0
+    total_pos = 0.0
+    for sit, items in pco_by_sit.items():
+        seq_pco += 1
+        group_seq = str(seq_pco)
+        group_items = []
+        for i, it in enumerate(items, start=1):
+            total_pos += it["vlr_float"]
+            group_items.append({
+                "numSeqItem": str(i),
+                "numEmpe": it["numEmpe"],
+                "codSubItemEmpe": it["codSubItemEmpe"],
+                "vlr": fmt_money_dot(it["vlr_float"]),
+                "numClassA": it["numClassA"],
+                "numClassB": it.get("numClassB", ""),
+            })
+            rel_pco_items.append({
+                "numSeqPai": group_seq,
+                "numSeqItem": str(i),
+                "vlr": fmt_money_dot(it["vlr_float"]),
+            })
+        pco_groups.append({
+            "numSeqItem": group_seq,
+            "codSit": sit,
+            "codUgEmpe": codUgEmpe,
+            "items": group_items,
+        })
+
+    despesa_anular_groups = []
+    rel_despesa_anular_items = []
+    seq_da = 0
+    total_neg = 0.0
+    for sit, items in neg_by_sit.items():
+        seq_da += 1
+        group_seq = str(seq_da)
+        group_items = []
+        for i, it in enumerate(items, start=1):
+            v_abs = abs(it["vlr_float"])
+            total_neg += v_abs
+            group_items.append({
+                "numSeqItem": str(i),
+                "numEmpe": it["numEmpe"],
+                "codSubItemEmpe": it["codSubItemEmpe"],
+                "vlr": fmt_money_dot(v_abs),
+                "numClassA": it["numClassA"],
+                "numClassB": it.get("numClassB", ""),
+            })
+            rel_despesa_anular_items.append({
+                "numSeqPai": group_seq,
+                "numSeqItem": str(i),
+                "vlr": fmt_money_dot(v_abs),
+            })
+        despesa_anular_groups.append({
+            "numSeqItem": group_seq,
+            "codSit": sit,
+            "codUgEmpe": codUgEmpe,
+            "items": group_items,
+        })
+
+    rebuilt_outros = []
+    rel_outros_items = []
+    total_outros = 0.0
+    for i, o in enumerate(outros_items, start=1):
+        total_outros += o["vlr_float"]
+        rebuilt_outros.append({
+            "numSeqItem": str(i),
+            "codSit": o["codSit"],
+            "tpNormalEstorno": o.get("tpNormalEstorno", ""),
+            "numClassA": o.get("numClassA", ""),
+            "numClassB": o.get("numClassB", ""),
+            "numClassD": o.get("numClassD", ""),
+            "vlr": o["vlr"],
+        })
+        rel_outros_items.append({
+            "numSeqItem": str(i),
+            "codNatDespDet": o.get("codNatDespDet", ""),
+            "vlr": o["vlr"],
+        })
+
+    liquido = total_pos - total_neg
+    return {
+        "pco_groups": pco_groups,
+        "despesa_anular_groups": despesa_anular_groups,
+        "outros_items": rebuilt_outros,
+        "rel_pco_items": rel_pco_items,
+        "rel_despesa_anular_items": rel_despesa_anular_items,
+        "rel_outros_items": rel_outros_items,
+        "total_pos": total_pos,
+        "total_neg": total_neg,
+        "total_outros": total_outros,
+        "liquido": liquido,
+    }
+
+def ratear_pagamentos(pgto_items_orig, valores_liquidos_chunks):
+    saldo_fontes = []
+    for p in pgto_items_orig:
+        saldo_fontes.append({
+            "codCredorDevedor": p["codCredorDevedor"],
+            "txtObser": p["txtObser"],
+            "codTipoOB": p["codTipoOB"],
+            "txtCit": p["txtCit"],
+            "bancoFavo": p["bancoFavo"],
+            "agenciaFavo": p["agenciaFavo"],
+            "contaFavo": p["contaFavo"],
+            "bancoPgto": p["bancoPgto"],
+            "contaPgto": p["contaPgto"],
+            "saldo": float(p["vlr_float"]),
+        })
+
+    chunks_pgto = []
+    for valor_chunk in valores_liquidos_chunks:
+        restante = float(valor_chunk)
+        chunk_pgto = []
+        for fonte in saldo_fontes:
+            if restante <= 0:
+                break
+            if fonte["saldo"] <= 0:
+                continue
+            usar = min(fonte["saldo"], restante)
+            if usar > 0:
+                chunk_pgto.append({
+                    "codCredorDevedor": fonte["codCredorDevedor"],
+                    "vlr": fmt_money_dot(usar),
+                    "vlr_float": usar,
+                    "txtObser": fonte["txtObser"],
+                    "codTipoOB": fonte["codTipoOB"],
+                    "txtCit": fonte["txtCit"],
+                    "bancoFavo": fonte["bancoFavo"],
+                    "agenciaFavo": fonte["agenciaFavo"],
+                    "contaFavo": fonte["contaFavo"],
+                    "bancoPgto": fonte["bancoPgto"],
+                    "contaPgto": fonte["contaPgto"],
+                })
+                fonte["saldo"] -= usar
+                restante -= usar
+        if round(restante, 2) != 0:
+            raise ValueError(
+                f"Não foi possível ratear pagamentos para uma FL de valor {fmt_money_dot(valor_chunk)}. Faltou {fmt_money_dot(restante)}."
+            )
+        chunks_pgto.append(chunk_pgto)
+    return chunks_pgto
+
 def build_xml(payload: dict) -> bytes:
-    """Suporta 1 ou vários <sb:detalhe> no mesmo arquivo."""
+    """
+    Gera um único XML com vários <sb:detalhe> (Opção B).
+    payload["detalhes_lista"] = lista de detalhes/FLs.
+    """
     root = ET.Element(sb("arquivo"))
 
     header = ET.SubElement(root, sb("header"))
@@ -217,11 +282,11 @@ def build_xml(payload: dict) -> bytes:
     add_text(header, sb("cpfResponsavel"), payload["header"]["cpfResponsavel"])
 
     detalhes = ET.SubElement(root, sb("detalhes"))
-    detalhes_lista = payload.get("detalhes_lista") or [payload]
 
-    for detalhe_payload in detalhes_lista:
+    for detalhe_payload in payload["detalhes_lista"]:
         detalhe = ET.SubElement(detalhes, sb("detalhe"))
         cadastrar = ET.SubElement(detalhe, dh("CprDhCadastrar"))
+
         add_text(cadastrar, "codUgEmit", detalhe_payload["topo"]["codUgEmit"])
         add_text(cadastrar, "anoDH", detalhe_payload["topo"]["anoDH"])
         add_text(cadastrar, "codTipoDH", detalhe_payload["topo"]["codTipoDH"])
@@ -303,12 +368,14 @@ def build_xml(payload: dict) -> bytes:
             add_text(rp, "numSeqPai", r["numSeqPai"])
             add_text(rp, "numSeqItem", r["numSeqItem"])
             add_text(rp, "vlr", r["vlr"])
+
         for r in detalhe_payload["rel_outros_items"]:
             ro = ET.SubElement(cc, "relOutrosLanc")
             add_text(ro, "numSeqItem", r["numSeqItem"])
             if r.get("codNatDespDet"):
                 add_text(ro, "codNatDespDet", r["codNatDespDet"])
             add_text(ro, "vlr", r["vlr"])
+
         for r in detalhe_payload["rel_despesa_anular_items"]:
             rd = ET.SubElement(cc, "relDespesaAnular")
             add_text(rd, "numSeqPai", r["numSeqPai"])
@@ -334,9 +401,10 @@ def build_xml(payload: dict) -> bytes:
             add_text(pg, "conta", p["contaPgto"])
 
     tr = ET.SubElement(root, sb("trailler"))
-    add_text(tr, sb("quantidadeDetalhe"), str(len(detalhes_lista)))
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    add_text(tr, sb("quantidadeDetalhe"), str(len(payload["detalhes_lista"])))
 
+    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return xml_bytes
 
 # =========================
 # Streamlit UI
@@ -723,94 +791,81 @@ with tab_gerar:
         st.success("✅ Soma de pagamentos bate com o valor líquido (dadosBasicos).")
 
     # =========
-    # Build payload e gerar XML (Opção B: vários detalhes)
+    # Split em múltiplos detalhes (Opção B)
     # =========
-    if len(outros_items) == 0:
-        st.info("Outros Lançamentos não informado: a geração seguirá sem a tag <outrosLanc> e sem validações dessa aba.")
+    flat_items = flatten_contabil_items(pco_lines, neg_lines, outros_items)
+    total_linhas_detalhe = len(flat_items)
+    chunks = split_into_chunks(flat_items, MAX_LINHAS_FL)
+
+    st.write(f"Linhas de lançamento consideradas para o limite: **{total_linhas_detalhe}**")
+    st.write(f"Quantidade de detalhe(s)/FL(s) gerados: **{len(chunks)}**")
+
+    detalhes_lista = []
+    liquidos_chunks = []
+
+    for chunk in chunks:
+        rebuilt = rebuild_chunk_structures(chunk, codUgEmpe.strip())
+        liquidos_chunks.append(rebuilt["liquido"])
+        detalhes_lista.append(rebuilt)
+
     if bloqueia_download:
         st.info("Corrija os erros acima para liberar a geração do XML.")
     else:
-        units = build_pco_row_units(pco_lines, neg_lines)
-        detail_chunks = chunk_units_by_pco_rows(units, MAX_PCO_LINHAS_POR_DETALHE)
-        detalhes_rebuild = []
-        liquidos_chunks = []
-
-        for idx, chunk_units in enumerate(detail_chunks, start=1):
-            rebuilt = rebuild_detail_from_units(
-                chunk_units,
-                codUgEmpe.strip(),
-                include_outros=(idx == 1),
-                outros_items=outros_items,
-            )
-            detalhes_rebuild.append(rebuilt)
-            liquidos_chunks.append(rebuilt['liquido'])
-
         pgto_chunks = ratear_pagamentos(pgto_items, liquidos_chunks)
-        detalhes_lista = []
-        for i, rebuilt in enumerate(detalhes_rebuild):
-            liquido_chunk = rebuilt['liquido']
-            detalhes_lista.append({
-                'topo': {
-                    'codUgEmit': codUgEmit.strip(),
-                    'anoDH': anoDH.strip(),
-                    'codTipoDH': codTipoDH.strip(),
+
+        detalhes_payload = []
+        for i, rebuilt in enumerate(detalhes_lista):
+            liquido_chunk = rebuilt["liquido"]
+            detalhes_payload.append({
+                "topo": {
+                    "codUgEmit": codUgEmit.strip(),
+                    "anoDH": anoDH.strip(),
+                    "codTipoDH": codTipoDH.strip(),
                 },
-                'dadosBasicos': {
-                    'dtEmis': dtEmis.strip(),
-                    'dtVenc': dtVenc.strip(),
-                    'codUgPgto': codUgPgto.strip(),
-                    'vlr': fmt_money_dot(liquido_chunk),
-                    'txtObser': txtObser.strip(),
-                    'txtProcesso': txtProcesso.strip(),
-                    'dtAteste': dtAteste.strip(),
-                    'codCredorDevedor': codCredorDevedor.strip(),
-                    'dtPgtoReceb': dtPgtoReceb.strip(),
+                "dadosBasicos": {
+                    "dtEmis": dtEmis.strip(),
+                    "dtVenc": dtVenc.strip(),
+                    "codUgPgto": codUgPgto.strip(),
+                    "vlr": fmt_money_dot(liquido_chunk),
+                    "txtObser": txtObser.strip(),
+                    "txtProcesso": txtProcesso.strip(),
+                    "dtAteste": dtAteste.strip(),
+                    "codCredorDevedor": codCredorDevedor.strip(),
+                    "dtPgtoReceb": dtPgtoReceb.strip(),
                 },
-                'docOrigem': {
-                    'codIdentEmit': codIdentEmit.strip(),
-                    'dtEmis': dtEmis.strip(),
-                    'numDocOrigem': numDocOrigem.strip(),
-                    'vlr': fmt_money_dot(liquido_chunk),
+                "docOrigem": {
+                    "codIdentEmit": codIdentEmit.strip(),
+                    "dtEmis": dtEmis.strip(),
+                    "numDocOrigem": numDocOrigem.strip(),
+                    "vlr": fmt_money_dot(liquido_chunk),
                 },
-                'pco_groups': rebuilt['pco_groups'],
-                'outros_items': [
-                    {
-                        'numSeqItem': o['numSeqItem'],
-                        'codSit': o['codSit'],
-                        'tpNormalEstorno': o.get('tpNormalEstorno', ''),
-                        'numClassA': o.get('numClassA', ''),
-                        'numClassB': o.get('numClassB', ''),
-                        'numClassD': o.get('numClassD', ''),
-                        'vlr': o['vlr'],
-                    } for o in rebuilt['outros_items']
-                ],
-                'despesa_anular_groups': rebuilt['despesa_anular_groups'],
-                'centroCusto_cfg': {
-                    'numSeqItem': '1',
-                    'codCentroCusto': codCentroCusto.strip(),
-                    'mesReferencia': mesReferencia.strip().zfill(2),
-                    'anoReferencia': anoReferenciaCC.strip(),
-                    'codUgBenef': codUgBenef.strip(),
-                    'codSIORG': codSIORG.strip(),
+                "pco_groups": rebuilt["pco_groups"],
+                "outros_items": rebuilt["outros_items"],
+                "despesa_anular_groups": rebuilt["despesa_anular_groups"],
+                "centroCusto_cfg": {
+                    "numSeqItem": "1",
+                    "codCentroCusto": codCentroCusto.strip(),
+                    "mesReferencia": mesReferencia.strip().zfill(2),
+                    "anoReferencia": anoReferenciaCC.strip(),
+                    "codUgBenef": codUgBenef.strip(),
+                    "codSIORG": codSIORG.strip(),
                 },
-                'rel_pco_items': rebuilt['rel_pco_items'],
-                'rel_outros_items': rebuilt['rel_outros_items'],
-                'rel_despesa_anular_items': rebuilt['rel_despesa_anular_items'],
-                'pgto_items': pgto_chunks[i],
+                "rel_pco_items": rebuilt["rel_pco_items"],
+                "rel_outros_items": rebuilt["rel_outros_items"],
+                "rel_despesa_anular_items": rebuilt["rel_despesa_anular_items"],
+                "pgto_items": pgto_chunks[i],
             })
 
-        st.write(f"Quantidade de detalhes gerados: **{len(detalhes_lista)}**")
-
         payload = {
-            'header': {
-                'codigoLayout': codigoLayout.strip(),
-                'dataGeracao': dataGeracao.strip(),
-                'sequencialGeracao': str(int(sequencialGeracao.strip() or '1')),
-                'anoReferencia': anoReferenciaHeader.strip(),
-                'ugResponsavel': ugResponsavel.strip(),
-                'cpfResponsavel': only_digits(cpfResponsavel),
+            "header": {
+                "codigoLayout": codigoLayout.strip(),
+                "dataGeracao": dataGeracao.strip(),
+                "sequencialGeracao": str(int(sequencialGeracao.strip() or "1")),
+                "anoReferencia": anoReferenciaHeader.strip(),
+                "ugResponsavel": ugResponsavel.strip(),
+                "cpfResponsavel": only_digits(cpfResponsavel),
             },
-            'detalhes_lista': detalhes_lista,
+            "detalhes_lista": detalhes_payload,
         }
 
         xml_bytes = build_xml(payload)
@@ -823,6 +878,4 @@ with tab_gerar:
             key="download_xml_btn",
         )
 
-    st.caption(
-        "Dica: se o SIAFI rejeitar algo, cole aqui o ERxxxx e o trecho do XML que eu ajusto a regra no gerador."
-    )
+    
