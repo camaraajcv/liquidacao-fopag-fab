@@ -465,7 +465,7 @@ with tab_pco:
     prefix = "pco"
     st.markdown("""Cole linhas no formato (5 a 6 colunas): **numEmpe | subitem(2) | codSit | numClassA | (numClassB opcional) | valor**
 
-• Para **DFL038**, informe também a conta de **Benefícios Previdenciários e Assistenciais** (ex.: `211310100`) como **numClassB**.""")
+• A **numClassB** é preenchida automaticamente para **DFL034** (`218910100`), **DFL038** (`211310100`) e **DFL041** (`211210100`), inclusive nas anulações.""")
     st.caption("""Ex.: 2026NE000055    46    DFL033    113110105    45905,55
 Ex.(DFL038): 2026NE000055    46    DFL038    113110105    211310100    45905,55""")
     pco_text = ta("PCO (colar)", "", prefix, height=220)
@@ -555,13 +555,14 @@ with tab_gerar:
         sit_norm = (sit or "").strip().upper()
         classB_digits = only_digits((classB or "").strip())
 
-        # Regra SIAFI (FL): quando usar DFL038, é obrigatória a Classificação B 211310100
-        if sit_norm == "DFL038":
-            if classB_digits and classB_digits != "211310100":
-                # mantém o arquivo compatível com a regra: força a conta correta
-                classB_digits = "211310100"
-            elif not classB_digits:
-                classB_digits = "211310100"
+        # Contas obrigatórias de Classificação B por situação, inclusive nas anulações.
+        contas_class_b = {
+            "DFL034": "218910100",
+            "DFL038": "211310100",
+            "DFL041": "211210100",
+        }
+        if sit_norm in contas_class_b:
+            classB_digits = contas_class_b[sit_norm]
 
         v = parse_money_br(val)
         item = {
