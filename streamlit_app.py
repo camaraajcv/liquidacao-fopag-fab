@@ -428,11 +428,189 @@ def build_xml(payload: dict) -> bytes:
 # Streamlit UI
 # =========================
 
-st.set_page_config(page_title="Gerador DH001 (FOPAG)", layout="wide")
-st.title("Gerador de XML DH001 (SIAFI) — FOPAG")
+st.set_page_config(
+    page_title="Liquidação da Folha de Pagamento - SDPP Via XML",
+    page_icon="📄",
+    layout="wide",
+)
+
+st.markdown("""
+<style>
+.stApp {
+    background: var(--background-color);
+}
+.block-container {
+    max-width: 1440px;
+    padding-top: 2.4rem;
+    padding-bottom: 3rem;
+}
+.sdpp-hero {
+    background: linear-gradient(120deg, #102b46 0%, #174e6b 100%);
+    border-radius: 18px;
+    padding: 2.1rem 2.4rem;
+    color: #fff;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 12px 32px rgba(16, 43, 70, .12);
+}
+.sdpp-eyebrow {
+    color: #a9d8df;
+    font-size: .76rem;
+    font-weight: 700;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    margin-bottom: .8rem;
+}
+.sdpp-hero h1 {
+    color: #fff;
+    font-size: clamp(1.6rem, 3vw, 2.35rem);
+    font-weight: 700;
+    line-height: 1.2;
+    padding: 0;
+    margin: 0 0 .85rem;
+}
+.sdpp-hero p {
+    color: #d7e6ee;
+    font-size: .98rem;
+    margin: 0;
+    max-width: 780px;
+}
+.sdpp-section {
+    margin: .8rem 0 1.4rem;
+    padding-bottom: .85rem;
+    border-bottom: 1px solid rgba(128, 145, 160, .22);
+}
+.sdpp-section h2 {
+    font-size: 1.35rem;
+    font-weight: 650;
+    padding: 0;
+    margin: 0 0 .35rem;
+}
+.sdpp-section p {
+    margin: 0;
+    font-size: .93rem;
+    opacity: .75;
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap: .4rem;
+    padding: .4rem;
+    border-radius: 12px;
+    background: rgba(128, 145, 160, .10);
+    overflow-x: auto;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 48px;
+    flex: 1 0 auto;
+    padding: 0 1rem;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: #174e6b;
+    color: #fff;
+    box-shadow: 0 3px 9px rgba(16, 43, 70, .15);
+}
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-border"] {
+    display: none;
+}
+.stTabs [data-baseweb="tab-panel"] {
+    padding-top: 1.3rem;
+}
+div[data-testid="stTextInput"] input,
+div[data-testid="stTextArea"] textarea {
+    border-radius: 8px;
+}
+div[data-testid="stTextArea"] textarea {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: .88rem;
+    line-height: 1.6;
+}
+div[data-testid="stMetric"] {
+    background: rgba(128, 145, 160, .07);
+    border: 1px solid rgba(128, 145, 160, .20);
+    border-radius: 12px;
+    padding: 1rem 1.15rem;
+}
+div[data-testid="stMetricValue"] {
+    font-size: clamp(1.25rem, 2vw, 1.8rem);
+}
+div[data-testid="stDownloadButton"] button {
+    background: #174e6b;
+    color: #fff;
+    border: 1px solid #174e6b;
+    border-radius: 9px;
+    padding: .75rem 1.5rem;
+    font-weight: 650;
+}
+div[data-testid="stDownloadButton"] button:hover {
+    background: #102b46;
+    color: #fff;
+    border-color: #102b46;
+}
+.sdpp-footer {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(128, 145, 160, .22);
+    font-size: .8rem;
+    opacity: .65;
+}
+@media (max-width: 700px) {
+    .block-container { padding-top: 1.3rem; }
+    .sdpp-hero { padding: 1.5rem; border-radius: 12px; }
+    .stTabs [data-baseweb="tab"] { padding: 0 .8rem; }
+}
+</style>
+<div class="sdpp-hero">
+    <div class="sdpp-eyebrow">SDPP &nbsp; / &nbsp; Folha de pagamento</div>
+    <h1>Liquidação da Folha de Pagamento - SDPP Via XML</h1>
+    <p>Prepare os lançamentos, confira os valores e gere o arquivo XML
+    para liquidação da folha no SIAFI.</p>
+</div>
+""", unsafe_allow_html=True)
+
+ROTULOS_CAMPOS = {
+    "codUgEmit": "UG emitente",
+    "anoDH": "Ano do documento",
+    "codTipoDH": "Tipo de documento hábil",
+    "dtEmis (AAAA-MM-DD)": "Data de emissão (AAAA-MM-DD)",
+    "dtVenc (AAAA-MM-DD)": "Data de vencimento (AAAA-MM-DD)",
+    "dtAteste (AAAA-MM-DD)": "Data do ateste (AAAA-MM-DD)",
+    "codUgPgto": "UG pagadora",
+    "codCredorDevedor (UG)": "Credor / devedor (UG)",
+    "dtPgtoReceb (AAAA-MM-DD)": "Data do pagamento (AAAA-MM-DD)",
+    "txtObser": "Descrição do pagamento",
+    "txtProcesso": "NUP / processo",
+    "numDocOrigem": "Número do documento de origem",
+    "codIdentEmit": "Identificação do emitente",
+    "codUgEmpe (para PCO/DespesaAnular)": "UG dos empenhos",
+    "codCentroCusto padrão": "Centro de custos padrão",
+    "mesReferencia (MM)": "Mês de referência (MM)",
+    "anoReferencia": "Ano de referência",
+    "codUgBenef": "UG beneficiária",
+    "codSIORG": "Código SIORG",
+    "codTipoOB": "Tipo de ordem bancária",
+    "conta FAVO": "Conta do favorecido",
+    "banco PGTO": "Banco pagador",
+    "conta PGTO": "Conta pagadora",
+    "codigoLayout": "Leiaute do arquivo",
+    "ugResponsavel": "UG responsável",
+    "dataGeracao (DD/MM/AAAA)": "Data de geração (DD/MM/AAAA)",
+    "sequencialGeracao (sem zero à esquerda)": "Sequencial de geração",
+    "anoReferencia (header)": "Ano de referência do arquivo",
+    "cpfResponsavel": "CPF do responsável",
+}
+
+def secao(titulo, descricao):
+    st.markdown(
+        f'<div class="sdpp-section"><h2>{titulo}</h2><p>{descricao}</p></div>',
+        unsafe_allow_html=True,
+    )
+
 
 def ti(label, value="", prefix=""):
-    return st.text_input(label, value=value, key=f"{prefix}:{label}")
+    return st.text_input(ROTULOS_CAMPOS.get(label, label), value=value, key=f"{prefix}:{label}")
 
 def ta(label, value="", prefix="", height=160):
     return st.text_area(label, value=value, height=height, key=f"{prefix}:{label}")
@@ -440,13 +618,14 @@ def ta(label, value="", prefix="", height=160):
 today = dt.date.today()
 
 tab_basicos, tab_pco, tab_outros, tab_cc, tab_pgto, tab_gerar = st.tabs(
-    ["Dados Básicos", "PCO (colar)", "Outros Lançamentos (colar)", "Centro de Custo", "Pagamentos (colar)", "Gerar XML"]
+    ["01 · Dados básicos", "02 · Lançamentos PCO", "03 · Outros lançamentos", "04 · Centro de custos", "05 · Pagamentos", "06 · Conferir e gerar"]
 )
 
 # -------------------------
 # Dados Básicos
 # -------------------------
 with tab_basicos:
+    secao("Dados do documento", "Informe as unidades, as datas e a identificação da folha de pagamento.")
     prefix = "basicos"
     col1, col2, col3 = st.columns(3)
 
@@ -480,6 +659,7 @@ with tab_basicos:
 # PCO (colar)
 # -------------------------
 with tab_pco:
+    secao("Lançamentos da folha", "Cole os dados da planilha para registrar os empenhos e as anulações.")
     prefix = "pco"
     st.markdown("""Cole linhas no formato (5 a 6 colunas): **numEmpe | subitem(2) ou NDD(8) | codSit | numClassA | (numClassB opcional) | valor**
 
@@ -495,6 +675,7 @@ Ex.(DFL038): 2026NE000055    46    DFL038    113110105    211310100    45905,55"
 # Outros Lançamentos (colar)
 # -------------------------
 with tab_outros:
+    secao("Outros lançamentos", "Inclua provisões e demais lançamentos contábeis, quando aplicável.")
     prefix = "outros"
     st.markdown("Cole linhas no formato (6 colunas): **codSit | classe3 | classe2 | NDD | N/E | valor**")
     st.caption("Ex.: PRV001    311110101    211110101    31901137    N    223,89")
@@ -505,6 +686,7 @@ with tab_outros:
 # Centro de Custo
 # -------------------------
 with tab_cc:
+    secao("Apropriação por centro de custos", "Defina a competência e o centro padrão. As regras por NDD são aplicadas automaticamente.")
     prefix = "cc"
     st.info("Centro automático 992300: ND 339008, subelementos 02 e 04; "
             "ND 339092, subelementos 08 e 33. Demais lançamentos usam o centro padrão abaixo. "
@@ -525,6 +707,7 @@ with tab_cc:
 # Pagamentos (colar)
 # -------------------------
 with tab_pgto:
+    secao("Dados do pagamento", "Informe os favorecidos e os dados bancários para compor as ordens de pagamento.")
     prefix = "pgto"
     st.markdown("Cole linhas no formato (5 colunas): **CNPJ | banco | agencia | txtCit | valor**")
     st.caption("Ex.: 00.000.000/0001-91    001    1607    120052FPAG999    57.079.618,21")
@@ -543,10 +726,11 @@ with tab_pgto:
 # Gerar / Checagens
 # -------------------------
 with tab_gerar:
+    secao("Conferência e geração do XML", "Revise a identificação do arquivo e confira os totais antes de baixar.")
     prefix = "gerar"
 
     # Header info
-    st.subheader("Header do arquivo")
+    st.markdown("#### Identificação do arquivo")
     col1, col2, col3 = st.columns(3)
     with col1:
         codigoLayout = ti("codigoLayout", "DH001", prefix)
@@ -762,18 +946,22 @@ with tab_gerar:
     # =========
     # Checagens
     # =========
-    st.subheader("Checagens")
+    st.divider()
+    st.markdown("#### Resumo da conferência")
 
     
-    st.write(f"Total POS (PCO): **{fmt_money_dot(total_pos)}**")
-    st.write(f"Total NEG (DespesaAnular): **{fmt_money_dot(total_neg)}**")
-    st.write(f"Valor líquido (Dados Básicos): **{dadosBasicosVlr}**")
-    st.write(f"Total OutrosLanc: **{fmt_money_dot(total_outros)}** (não entra no líquido)")
-    st.write(f"Soma Pagamentos (dadosPgto): **{fmt_money_dot(total_pgto)}**")
-
-    # Centro de custo (como você vinha usando): relPco + relOutros - relDespesaAnular
-    soma_cc = (total_pos + total_outros - total_neg)
-    st.write(f"Soma CentroCusto (relPco + relOutros - relDespesaAnular): **{fmt_money_dot(soma_cc)}**")
+    resumo = st.columns(3)
+    resumo[0].metric("Lançamentos PCO", fmt_money_dot(total_pos))
+    resumo[1].metric("Anulações", fmt_money_dot(total_neg))
+    resumo[2].metric("Valor líquido da folha", dadosBasicosVlr)
+    resumo_extra = st.columns(3)
+    resumo_extra[0].metric("Outros lançamentos", fmt_money_dot(total_outros))
+    resumo_extra[1].metric("Pagamentos informados", fmt_money_dot(total_pgto))
+    soma_cc = total_pos + total_outros - total_neg
+    resumo_extra[2].metric("Apropriação aos centros de custos", fmt_money_dot(soma_cc))
+    st.caption("Valores no padrão do XML: ponto decimal e duas casas. "
+               "O valor líquido corresponde ao PCO menos as anulações; "
+               "outros lançamentos integram a apropriação aos centros de custos.")
 
     if invalid_pco:
         st.warning(f"PCO: {len(invalid_pco)} linha(s) com colunas insuficientes (foram ignoradas).")
@@ -828,8 +1016,7 @@ with tab_gerar:
     total_linhas_detalhe = len(flat_items)
     chunks = split_into_chunks(flat_items, MAX_LINHAS_FL)
 
-    st.write(f"Linhas de lançamento consideradas para o limite: **{total_linhas_detalhe}**")
-    st.write(f"Quantidade de detalhe(s)/FL(s) gerados: **{len(chunks)}**")
+    st.caption(f"{total_linhas_detalhe} lançamento(s) · {len(chunks)} documento(s)/FL(s) no XML · até {MAX_LINHAS_FL} lançamentos por detalhe")
 
     detalhes_lista = []
     liquidos_chunks = []
@@ -902,7 +1089,7 @@ with tab_gerar:
         xml_bytes = build_xml(payload)
 
         st.download_button(
-            "⬇️ Baixar XML (DH001)",
+            "Baixar XML da folha · DH001",
             data=xml_bytes,
             file_name="DH001_FOPAG.xml",
             mime="application/xml",
@@ -910,3 +1097,5 @@ with tab_gerar:
         )
 
     
+
+st.markdown('<div class="sdpp-footer">SDPP · Liquidação da folha de pagamento · Integração SIAFI / DH001</div>', unsafe_allow_html=True)
