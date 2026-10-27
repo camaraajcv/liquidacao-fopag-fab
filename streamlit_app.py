@@ -88,6 +88,12 @@ def add_text(parent, tag, text):
 
 MAX_LINHAS_FL = 100
 
+NDD_CENTRO_CUSTO_992300 = {"33900802", "33900804", "33909208", "33909233"}
+
+def centro_custo_automatico(ndd):
+    return "992300" if only_digits(ndd) in NDD_CENTRO_CUSTO_992300 else None
+
+
 def split_into_chunks(seq, max_size):
     return [seq[i:i + max_size] for i in range(0, len(seq), max_size)]
 
@@ -143,6 +149,7 @@ def rebuild_chunk_structures(chunk_items, codUgEmpe):
             rel_pco_items.append({
                 "numSeqPai": group_seq,
                 "numSeqItem": str(i),
+                "codCentroCusto": centro_custo_automatico(it.get("codNatDespDet", "")),
                 "vlr": fmt_money_dot(it["vlr_float"]),
             })
         pco_groups.append({
@@ -174,6 +181,7 @@ def rebuild_chunk_structures(chunk_items, codUgEmpe):
             rel_despesa_anular_items.append({
                 "numSeqPai": group_seq,
                 "numSeqItem": str(i),
+                "codCentroCusto": centro_custo_automatico(it.get("codNatDespDet", "")),
                 "vlr": fmt_money_dot(v_abs),
             })
         despesa_anular_groups.append({
@@ -200,6 +208,7 @@ def rebuild_chunk_structures(chunk_items, codUgEmpe):
         rel_outros_items.append({
             "numSeqItem": str(i),
             "codNatDespDet": o.get("codNatDespDet", ""),
+            "codCentroCusto": centro_custo_automatico(o.get("codNatDespDet", "")),
             "vlr": o["vlr"],
         })
 
@@ -355,32 +364,41 @@ def build_xml(payload: dict) -> bytes:
                     add_text(di, "numClassB", item["numClassB"])
 
         cc_cfg = detalhe_payload["centroCusto_cfg"]
-        cc = ET.SubElement(cadastrar, "centroCusto")
-        add_text(cc, "numSeqItem", cc_cfg["numSeqItem"])
-        add_text(cc, "codCentroCusto", cc_cfg["codCentroCusto"])
-        add_text(cc, "mesReferencia", cc_cfg["mesReferencia"])
-        add_text(cc, "anoReferencia", cc_cfg["anoReferencia"])
-        add_text(cc, "codUgBenef", cc_cfg["codUgBenef"])
-        add_text(cc, "codSIORG", cc_cfg["codSIORG"])
+        centros = {}
+        tipos_relacao = ("rel_pco_items", "rel_outros_items", "rel_despesa_anular_items")
+        for tipo in tipos_relacao:
+            for relacao in detalhe_payload[tipo]:
+                codigo_cc = relacao.get("codCentroCusto") or cc_cfg["codCentroCusto"]
+                vinculos = centros.setdefault(codigo_cc, {t: [] for t in tipos_relacao})
+                vinculos[tipo].append(relacao)
 
-        for r in detalhe_payload["rel_pco_items"]:
-            rp = ET.SubElement(cc, "relPcoItem")
-            add_text(rp, "numSeqPai", r["numSeqPai"])
-            add_text(rp, "numSeqItem", r["numSeqItem"])
-            add_text(rp, "vlr", r["vlr"])
+        for seq_cc, (codigo_cc, vinculos) in enumerate(centros.items(), start=1):
+            cc = ET.SubElement(cadastrar, "centroCusto")
+            add_text(cc, "numSeqItem", str(seq_cc))
+            add_text(cc, "codCentroCusto", codigo_cc)
+            add_text(cc, "mesReferencia", cc_cfg["mesReferencia"])
+            add_text(cc, "anoReferencia", cc_cfg["anoReferencia"])
+            add_text(cc, "codUgBenef", cc_cfg["codUgBenef"])
+            add_text(cc, "codSIORG", cc_cfg["codSIORG"])
 
-        for r in detalhe_payload["rel_outros_items"]:
-            ro = ET.SubElement(cc, "relOutrosLanc")
-            add_text(ro, "numSeqItem", r["numSeqItem"])
-            if r.get("codNatDespDet"):
-                add_text(ro, "codNatDespDet", r["codNatDespDet"])
-            add_text(ro, "vlr", r["vlr"])
+            for r in vinculos["rel_pco_items"]:
+                rp = ET.SubElement(cc, "relPcoItem")
+                add_text(rp, "numSeqPai", r["numSeqPai"])
+                add_text(rp, "numSeqItem", r["numSeqItem"])
+                add_text(rp, "vlr", r["vlr"])
 
-        for r in detalhe_payload["rel_despesa_anular_items"]:
-            rd = ET.SubElement(cc, "relDespesaAnular")
-            add_text(rd, "numSeqPai", r["numSeqPai"])
-            add_text(rd, "numSeqItem", r["numSeqItem"])
-            add_text(rd, "vlr", r["vlr"])
+            for r in vinculos["rel_outros_items"]:
+                ro = ET.SubElement(cc, "relOutrosLanc")
+                add_text(ro, "numSeqItem", r["numSeqItem"])
+                if r.get("codNatDespDet"):
+                    add_text(ro, "codNatDespDet", r["codNatDespDet"])
+                add_text(ro, "vlr", r["vlr"])
+
+            for r in vinculos["rel_despesa_anular_items"]:
+                rd = ET.SubElement(cc, "relDespesaAnular")
+                add_text(rd, "numSeqPai", r["numSeqPai"])
+                add_text(rd, "numSeqItem", r["numSeqItem"])
+                add_text(rd, "vlr", r["vlr"])
 
         for p in detalhe_payload["pgto_items"]:
             dp = ET.SubElement(cadastrar, "dadosPgto")
@@ -463,11 +481,13 @@ with tab_basicos:
 # -------------------------
 with tab_pco:
     prefix = "pco"
-    st.markdown("""Cole linhas no formato (5 a 6 colunas): **numEmpe | subitem(2) | codSit | numClassA | (numClassB opcional) | valor**
+    st.markdown("""Cole linhas no formato (5 a 6 colunas): **numEmpe | subitem(2) ou NDD(8) | codSit | numClassA | (numClassB opcional) | valor**
 
 • A **numClassB** é preenchida automaticamente para **DFL034** (`218910100`), **DFL038** (`211310100`) e **DFL041** (`211210100`), inclusive nas anulações.""")
     st.caption("""Ex.: 2026NE000055    46    DFL033    113110105    45905,55
 Ex.(DFL038): 2026NE000055    46    DFL038    113110105    211310100    45905,55""")
+    st.info("Para aplicar o centro de custos automático, informe a NDD completa na "
+            "segunda coluna (ex.: 33900802). Com apenas 2 dígitos, será usado o centro padrão.")
     pco_text = ta("PCO (colar)", "", prefix, height=220)
     codUgEmpe = ti("codUgEmpe (para PCO/DespesaAnular)", "120052", prefix)
 
@@ -486,9 +506,12 @@ with tab_outros:
 # -------------------------
 with tab_cc:
     prefix = "cc"
+    st.info("Centro automático 992300: ND 339008, subelementos 02 e 04; "
+            "ND 339092, subelementos 08 e 33. Demais lançamentos usam o centro padrão abaixo. "
+            "No PCO, informe a NDD completa; em Outros Lançamentos, use a coluna NDD.")
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        codCentroCusto = ti("codCentroCusto", "221A00", prefix)
+        codCentroCusto = ti("codCentroCusto padrão", "221A00", prefix)
     with col2:
         mesReferencia = ti("mesReferencia (MM)", "01", prefix)
     with col3:
@@ -552,6 +575,12 @@ with tab_gerar:
             numEmpe, subitem, sit, classA, val = parts[:5]
             classB = ""
 
+        subitem_digits = only_digits(subitem)
+        if len(subitem_digits) not in (1, 2, 8):
+            st.error(f"Subitem inválido: {subitem}. Informe até 2 dígitos ou a NDD de 8 dígitos.")
+            st.stop()
+        ndd_pco = subitem_digits if len(subitem_digits) == 8 else ""
+
         sit_norm = (sit or "").strip().upper()
         classB_digits = only_digits((classB or "").strip())
 
@@ -567,7 +596,8 @@ with tab_gerar:
         v = parse_money_br(val)
         item = {
             "numEmpe": numEmpe.strip(),
-            "codSubItemEmpe": subitem.strip().zfill(2),
+            "codSubItemEmpe": subitem_digits[-2:].zfill(2),
+            "codNatDespDet": ndd_pco,
             "codSit": sit_norm,
             "numClassA": only_digits(classA.strip()),
             "numClassB": classB_digits,
