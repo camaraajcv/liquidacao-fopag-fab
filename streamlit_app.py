@@ -663,7 +663,7 @@ with tab_pco:
     prefix = "pco"
     st.markdown("""Cole linhas no formato (5 a 6 colunas): **numEmpe | subitem(2) ou NDD(8) | codSit | numClassA | (numClassB opcional) | valor**
 
-• A **numClassB** é preenchida automaticamente para **DFL034** (`218910100`), **DFL038** (`211310100`) e **DFL041** (`211210100`), inclusive nas anulações.""")
+• A **numClassB** é preenchida automaticamente para **DFL034** (`218910100`) e **DFL038** (`211310100`), inclusive nas anulações. Para **DFL041**, a classificação B é opcional e só será incluída se informada.""")
     st.caption("""Ex.: 2026NE000055    46    DFL033    113110105    45905,55
 Ex.(DFL038): 2026NE000055    46    DFL038    113110105    211310100    45905,55""")
     st.info("Para aplicar o centro de custos automático, informe a NDD completa na "
@@ -772,7 +772,6 @@ with tab_gerar:
         contas_class_b = {
             "DFL034": "218910100",
             "DFL038": "211310100",
-            "DFL041": "211210100",
         }
         if sit_norm in contas_class_b:
             classB_digits = contas_class_b[sit_norm]
